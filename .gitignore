@@ -22,6 +22,7 @@ scripts/_*
 scripts/remote-server/_*
 scripts/remote-server/e2e_*
 scripts/pda_*
+scripts/pif/
 scripts/remote_prefs.xml
 scripts/sos_ui.png
 scripts/cleanup-recovery.ps1
