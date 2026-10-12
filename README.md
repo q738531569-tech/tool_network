@@ -81,6 +81,8 @@ native-tools/         自研 C 工具源码（arpspoof/deauth/arpscan/ndpspoof�
 scripts/              发布脚本 + 服务端 PHP + Node 中转
 ```
 
+每个目录均有 README 详述包结构与类职责：[app](app/README.md) · [core-network](core-network/README.md) · [core-agent](core-agent/README.md) · [core-capture](core-capture/README.md) · [core-isapi](core-isapi/README.md) · [core-common](core-common/README.md) · [core-router](core-router/README.md) · [native-tools](native-tools/README.md) · [scripts](scripts/README.md)
+
 ## 许可
 
 [MIT](LICENSE) © 2026 黑漂 (q738531569-tech)
