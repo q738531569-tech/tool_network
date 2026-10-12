@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 装维通启动图标背景：深蓝科技渐变 + 细微网格点（科技感，贴近网络/通信行业） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 底层：深蓝 → 亮蓝 135° 渐变 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:startColor="#081A3C"
+                android:endColor="#1552B3"
+                android:angle="135" />
+        </shape>
+    </item>
+    <!-- 上层：网格点阵（白色 5% 透明，模拟科技网格） -->
+    <item>
+        <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp"
+            android:height="108dp"
+            android:viewportWidth="108"
+            android:viewportHeight="108">
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M20,18 A1.2,1.2 0 1,0 22.4,18 A1.2,1.2 0 1,0 20,18 Z" />
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M40,18 A1.2,1.2 0 1,0 42.4,18 A1.2,1.2 0 1,0 40,18 Z" />
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M60,18 A1.2,1.2 0 1,0 62.4,18 A1.2,1.2 0 1,0 60,18 Z" />
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M80,18 A1.2,1.2 0 1,0 82.4,18 A1.2,1.2 0 1,0 80,18 Z" />
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M30,30 A1.2,1.2 0 1,0 32.4,30 A1.2,1.2 0 1,0 30,30 Z" />
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M50,30 A1.2,1.2 0 1,0 52.4,30 A1.2,1.2 0 1,0 50,30 Z" />
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M70,30 A1.2,1.2 0 1,0 72.4,30 A1.2,1.2 0 1,0 70,30 Z" />
+            <path
+                android:fillColor="#14FFFFFF"
+                android:pathData="M90,30 A1.2,1.2 0 1,0 92.4,30 A1.2,1.2 0 1,0 90,30 Z" />
+        </vector>
+    </item>
+</layer-list>

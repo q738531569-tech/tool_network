@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 纯 Compose 应用：无 ActionBar，深色模式由 Compose 主题控制 -->
+    <style name="Theme.Toolbox" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

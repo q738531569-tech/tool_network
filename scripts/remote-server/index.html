@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>装维通 · 远程控制台</title>
+<style>
+  /* 全屏布局：body 占满视口、无页面滚动条（侧栏/对话区各自内部滚动） */
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #fff; margin: 0; padding: 0; height: 100vh; overflow: hidden; }
+  .wrap { width: 100%; margin: 0; }
+  h1 { font-size: 18px; color: #1a1a2e; margin: 0 0 14px; }
+  .login { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); width: 320px; margin: 60px auto; text-align: center; }
+  .login input { width: 100%; padding: 10px; border: 1px solid #d9d9d9; border-radius: 8px; font-size: 14px; box-sizing: border-box; margin-bottom: 12px; }
+  .login button { width: 100%; padding: 10px; background: #1677ff; color: #fff; border: 0; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .err { color: #e74c3c; font-size: 13px; margin-bottom: 10px; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.06); margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.on { background: #52c41a; } .dot.off { background: #d9d9d9; }
+  .name { font-size: 15px; font-weight: 600; color: #1a1a2e; }
+  .sub { font-size: 12px; color: #888; }
+  .btn { padding: 8px 16px; border: 0; border-radius: 8px; background: #1677ff; color: #fff; font-size: 13px; cursor: pointer; flex: none; }
+  .btn:disabled { background: #d9d9d9; cursor: not-allowed; }
+  .btn.stop { background: #e74c3c; }
+  .btn-danger { background: #e74c3c; }
+  .btn-ghost { background: #fff; color: #e74c3c; border: 1px solid #e74c3c; }
+  .empty { background: #fff; border-radius: 12px; padding: 40px; text-align: center; color: #999; font-size: 14px; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .logout { font-size: 13px; color: #1677ff; cursor: pointer; }
+
+  /* ===== 全屏左右布局（DeepSeek Harness Web 风格）：左侧固定侧栏 + 右侧全屏对话区 ===== */
+  #mainBox { display: flex; height: 100vh; overflow: hidden; }
+  .sidebar { width: 300px; min-width: 300px; background: #fafbfc; border-right: 1px solid #eee; overflow-y: auto; padding: 16px; box-sizing: border-box; }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* 对话区占满右侧剩余高度（display 由 JS 在 block/none 间切换，此处只定 flex 占位与高度） */
+  #chatArea { flex: 1; min-height: 0; }
+  /* 设备卡片紧凑：设备名/归属单行省略号（适配 300px 侧栏） */
+  #deviceArea .card { padding: 12px; gap: 10px; }
+  #deviceArea .name, #deviceArea .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 会话选择器：置于侧栏，select 全宽 + 按钮小号换行 */
+  .sidebar .session-bar { padding: 8px 0; background: transparent; border-top: 1px solid #f0f0f0; border-bottom: 0; }
+  /* 会话卡片列表（替代下拉框：每会话一张卡，当前高亮，点击切换） */
+  .session-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .session-list.locked { opacity: .5; pointer-events: none; }
+  .sess-card { padding: 9px 12px; border: 1px solid #eee; border-radius: 10px; background: #fff; cursor: pointer; transition: all .15s; }
+  .sess-card:hover { border-color: #b7d4ff; background: #f5f9ff; }
+  .sess-card.active { border-color: #1677ff; background: #e6f4ff; }
+  .sess-card .st { font-size: 13px; color: #333; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-card.active .st { color: #1677ff; }
+  .sess-card .sm { font-size: 11px; color: #999; margin-top: 3px; }
+  /* 汉堡按钮：默认隐藏（桌面端），移动端显示 */
+  .hamburger { display: none; border: 0; background: none; font-size: 20px; color: #1a1a2e; cursor: pointer; padding: 0 4px; line-height: 1; flex: none; }
+
+  /* 登录/注册：纯文字标签（下划线指示激活态），与底部渐变主按钮彻底区分 */
+  .tabs { display: flex; gap: 26px; margin-bottom: 18px; border-bottom: 1px solid #eee; }
+  .tab { border: 0; background: none; padding: 8px 2px 10px; font-size: 15px; color: #8a94a6; cursor: pointer; position: relative; }
+  .tab.active-login { color: #1677ff; font-weight: 600; }
+  .tab.active-register { color: #22a06b; font-weight: 600; }
+  .tab.active-login::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2.5px; background: #1677ff; border-radius: 2px; }
+  .tab.active-register::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2.5px; background: #22a06b; border-radius: 2px; }
+  /* 底部提交按钮：全宽实心渐变主按钮（与顶部滑片式标签形成清晰主次层级） */
+  #loginBtn { width: 100%; padding: 12px; border: 0; border-radius: 10px; font-size: 15px; color: #fff; cursor: pointer; transition: background .2s; box-shadow: 0 4px 12px rgba(22,119,255,.25); }
+  #loginBtn.mode-login { background: linear-gradient(135deg, #1677ff, #4096ff); }
+  #loginBtn.mode-register { background: linear-gradient(135deg, #22a06b, #4bc38a); box-shadow: 0 4px 12px rgba(34,160,107,.25); }
+
+  /* 顶部临时提示条 */
+  #notice { display: none; background: #e6f7ff; color: #1677ff; border: 1px solid #91d5ff; border-radius: 8px; padding: 8px 12px; font-size: 13px; margin-bottom: 12px; }
+
+  /* ===== 对话区 ===== */
+  /* 对话区撑满右侧（去掉固定 62vh，改 100% 由父容器 .main 决定高度；扁平化贴合全屏布局） */
+  .chatbox { background: #fff; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+  .chat-head { padding: 12px 16px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; flex: none; }
+  .chat-title { font-size: 15px; font-weight: 600; color: #1a1a2e; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .auth-row { padding: 10px 16px; border-bottom: 1px solid #ffd591; font-size: 13px; color: #8c5b1a; flex: none; background: #fff7e6; }
+  .auth-row input { transform: scale(1.25); margin-right: 4px; vertical-align: -2px; }
+  .global-auth { border: 1px dashed #ffc069; border-radius: 10px; margin-bottom: 12px; border-bottom: 1px dashed #ffc069; background: #fffbf0; }
+  .auth-row input { vertical-align: -2px; }
+  /* 会话选择器（控制端与 PDA 屏上 AI 页共用同一份 chat_sessions） */
+  .session-bar { padding: 8px 16px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 6px; flex: none; background: #fff; flex-wrap: wrap; }
+  .session-bar label { font-size: 12px; color: #888; flex: none; }
+  .session-bar select { flex: 1; min-width: 150px; max-width: 340px; padding: 5px 8px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 13px; background: #fff; }
+  .session-bar select:disabled { background: #f5f5f5; color: #bbb; }
+  .btn-mini { padding: 5px 8px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; color: #1677ff; font-size: 12px; cursor: pointer; flex: none; line-height: 1; }
+  .btn-mini:disabled { color: #bbb; cursor: not-allowed; background: #f5f5f5; border-color: #eee; }
+  .btn-mini-danger { color: #e74c3c; border-color: #ffd6d6; }
+  .msglist { flex: 1; overflow-y: auto; padding: 16px; background: #fafbfc; -webkit-overflow-scrolling: touch; }
+  .msg { margin-bottom: 12px; display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .msg.assistant { justify-content: flex-start; }
+  .msg.sys { justify-content: center; }
+  .bubble { position: relative; max-width: 86%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
+  .user .bubble { background: #1677ff; color: #fff; border-top-right-radius: 4px; }
+  .assistant .bubble { background: #f0f0f0; color: #333; border-top-left-radius: 4px; }
+  /* 单轮删除按钮：气泡右上角小圆 ✕ 常显（浅色，悬停加深），点掉该轮 user+assistant（不再进 AI 上下文） */
+  .del-round { position: absolute; top: -7px; right: -7px; width: 20px; height: 20px; border-radius: 50%; background: #9aa0a6; color: #fff; font-size: 12px; line-height: 20px; text-align: center; cursor: pointer; opacity: .55; transition: opacity .15s; z-index: 2; }
+  .msg:hover .del-round { opacity: 1; }
+  .del-round:hover { background: #e74c3c; opacity: 1; }
+  .sysmsg { font-size: 12px; color: #aaa; margin: 4px 0; text-align: center; }
+
+  /* 状态行（气泡上方小字） */
+  .status-line { font-size: 12px; color: #fa8c16; margin-bottom: 6px; white-space: normal; }
+  /* 思考折叠 */
+  .think { border-left: 3px solid #d9d9d9; padding: 4px 10px; margin: 6px 0; background: #fafafa; border-radius: 4px; }
+  .think-head { font-size: 12px; color: #666; cursor: pointer; user-select: none; }
+  .think-head span { color: #999; }
+  .think-body { font-size: 12px; color: #888; white-space: pre-wrap; margin-top: 4px; word-break: break-word; }
+  /* 工具折叠卡 */
+  .tool { border: 1px solid #e5e5e5; border-radius: 6px; margin: 6px 0; background: #f7f9fb; }
+  .tool-head { font-size: 12px; color: #444; cursor: pointer; padding: 6px 10px; user-select: none; }
+  .tool-head span { color: #999; }
+  .tool-body { padding: 0 10px 8px; font-size: 12px; }
+  .tool-io { color: #666; margin: 4px 0; white-space: pre-wrap; word-break: break-all; }
+  .tool-io-label { color: #999; }
+  .tool-out { white-space: pre-wrap; color: #555; max-height: 220px; overflow: auto; margin: 4px 0 0; font-family: Consolas, Monaco, monospace; font-size: 11px; }
+  /* 正文（与上方思考/工具块隔开一点，层次更清晰） */
+  .body { margin-top: 8px; }
+  .body.err { color: #e74c3c; }
+  .body.dim { color: #bbb; }
+  .meta { font-size: 11px; color: #999; margin-top: 6px; white-space: normal; }
+  .hide { display: none; }
+
+  /* 离线提示条 + 输入区 */
+  .offline-banner { background: #fff7e6; color: #d46b08; padding: 10px 16px; font-size: 13px; border-top: 1px solid #ffe7ba; flex: none; }
+  .inputbar { padding: 10px; border-top: 1px solid #eee; display: flex; gap: 8px; flex: none; }
+  .inputbar textarea { flex: 1; resize: none; border: 1px solid #d9d9d9; border-radius: 8px; padding: 8px 10px; font-size: 16px; font-family: inherit; line-height: 1.5; min-height: 40px; max-height: 120px; box-sizing: border-box; }
+  .inputbar textarea:disabled { background: #f5f5f5; }
+
+  /* ===== 审批弹窗 ===== */
+  .approval-mask { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 999; padding: 16px; }
+  .approval-box { background: #fff; border-radius: 12px; width: 100%; max-width: 560px; padding: 20px; box-sizing: border-box; }
+  .approval-box h3 { margin: 0 0 10px; font-size: 16px; color: #1a1a2e; }
+  .approval-tool { font-size: 13px; color: #888; margin-bottom: 8px; }
+  .approval-cmd { background: #1e1e2e; color: #d4d4d4; font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; line-height: 1.5; padding: 12px; border-radius: 8px; max-height: 40vh; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
+  .approval-timer { font-size: 12px; color: #e74c3c; margin: 10px 0; }
+  .approval-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+  /* ===== 记忆弹窗（与审批弹窗同款遮罩；列表可滚动） ===== */
+  .mem-mask { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
+  .mem-box { background: #fff; border-radius: 12px; width: 100%; max-width: 560px; max-height: 80vh; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; }
+  .mem-box h3 { margin: 0 0 4px; font-size: 16px; color: #1a1a2e; }
+  .mem-sub { font-size: 12px; color: #888; margin-bottom: 10px; }
+  .mem-list { overflow-y: auto; flex: 1; min-height: 80px; margin-bottom: 12px; }
+  .mem-item { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border: 1px solid #eee; border-radius: 10px; margin-bottom: 8px; background: #fafafa; }
+  .mem-item .mt { flex: 1; font-size: 13px; color: #333; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+  .mem-item .mt .mtime { display: block; font-size: 11px; color: #aaa; margin-top: 3px; }
+  .mem-item .mdel { flex: none; background: none; border: none; color: #999; cursor: pointer; font-size: 13px; padding: 2px 4px; }
+  .mem-item .mdel:hover { color: #e74c3c; }
+  .mem-empty { color: #999; font-size: 13px; text-align: center; padding: 28px 0; }
+  .mem-actions { display: flex; gap: 10px; justify-content: space-between; }
+
+  /* ===== 移动端（宽 < 768px）：侧栏抽屉化 + 顶部汉堡按钮 ===== */
+  @media (max-width: 768px) {
+    .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 50; transform: translateX(-100%); transition: transform .2s; }
+    .sidebar.open { transform: translateX(0); box-shadow: 2px 0 12px rgba(0,0,0,.2); }
+    .hamburger { display: block; }
+    /* 移动端屏幕窄，消息气泡放宽 */
+    .bubble { max-width: 92%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <!-- 登录 / 注册 -->
+  <div id="loginBox" class="login">
+    <h1>装维通 · 远程控制台</h1>
+    <div class="tabs">
+      <span class="tab active-login" id="tabLogin" onclick="switchTab('login')">登 录</span>
+      <span class="tab" id="tabReg" onclick="switchTab('register')">注 册</span>
+    </div>
+    <div class="err" id="loginErr"></div>
+    <input type="text" id="name" placeholder="账号" autofocus inputmode="latin" autocomplete="username" onkeydown="if(event.key==='Enter'){doLogin();}">
+    <input type="password" id="pwd" placeholder="密码" inputmode="latin" autocomplete="current-password" onkeydown="if(event.key==='Enter'){doLogin();}">
+    <button id="loginBtn" class="mode-login" onclick="doLogin()">登 录</button>
+  </div>
+  <!-- 主界面 -->
+  <div id="mainBox" style="display:none">
+    <!-- 左侧固定侧边栏：标题 + 连接状态 + 退出 + 提示 + 全局授权 + 设备列表 + 会话管理 -->
+    <div class="sidebar" id="sidebar">
+      <div class="top">
+        <h1>🛰 远程控制台 <span id="connState" style="font-size:12px;color:#888"></span></h1>
+        <span class="logout" onclick="logout()">退出</span>
+      </div>
+      <div id="notice"></div>
+      <div id="deviceArea"></div>
+      <!-- 会话选择器（控制端与 PDA 屏上 AI 页共用同一份 chat_sessions） -->
+      <div class="session-bar">
+        <button class="btn-mini" id="btnNew" onclick="sessionNew()">＋ 新建</button>
+        <button class="btn-mini" id="btnRename" onclick="sessionRename()">✏️ 重命名</button>
+        <button class="btn-mini" id="btnDel" onclick="sessionDelete()">🗑 删除</button>
+        <button class="btn-mini btn-mini-danger" id="btnClear" onclick="sessionClear()">清空</button>
+        <button class="btn-mini" id="btnMem" onclick="openMemory()">🧠 记忆</button>
+      </div>
+      <div class="session-list" id="sessionList"></div>
+    </div>
+    <!-- 右侧全屏对话区：消息流 + 底部输入框撑满剩余空间 -->
+    <div class="main" id="mainArea">
+      <div id="chatArea" style="display:none">
+        <div class="chatbox">
+          <!-- 顶部：汉堡按钮（仅移动端）+ 设备名 + 在线状态 -->
+          <div class="chat-head">
+            <button class="hamburger" onclick="toggleSidebar()" aria-label="打开侧边栏">☰</button>
+            <span class="dot off" id="chatDot"></span>
+            <span class="chat-title" id="chatTitle">设备</span>
+            <span class="sub" id="chatOnline"></span>
+          </div>
+          <!-- root 审批档位（点击循环切换：每步审批→会话允许→关闭；ARP 类命令免审批）+ 余额/缓存命中状态 -->
+          <div class="auth-row">
+            <button class="btn-mini" id="shellLevelBtn" onclick="cycleShellLevel()">🛡 root 审批：每步审批</button>
+            <span class="sub" id="balanceStat" style="float:right;color:#888;margin-right:8px"></span>
+            <span class="sub" style="float:right;color:#888;margin-right:4px" id="shellLevelHint">ARP 免审批</span>
+            <span class="sub" id="cacheStat" style="float:right;color:#888;margin-right:8px"></span>
+          </div>
+          <!-- 消息列表 -->
+          <div id="loadMoreBar" style="display:none; text-align:center; padding:6px;">
+            <button id="loadMoreBtn" class="btn-mini" onclick="loadMoreHistory()">↑ 加载更早的消息</button>
+          </div>
+          <div class="msglist" id="chatMsgs"></div>
+          <!-- 离线提示 -->
+          <div class="offline-banner" id="offlineBanner" style="display:none">⚠ 设备已离线（现场断网/断电/App 被关），等待其重连…</div>
+          <!-- 输入区 -->
+          <div class="inputbar">
+            <textarea id="chatText" placeholder="输入指令，例如：帮我检测 PCDN…" rows="1"></textarea>
+            <button class="btn" id="sendBtn" onclick="sendMsg()">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- 审批弹窗 -->
+  <div class="approval-mask" id="approvalMask" style="display:none">
+    <div class="approval-box">
+      <h3>🛡 远程审批请求</h3>
+      <div class="approval-tool" id="approvalTool"></div>
+      <pre class="approval-cmd" id="approvalCmd"></pre>
+      <div class="approval-timer" id="approvalTimer"></div>
+      <div class="approval-actions">
+        <button class="btn btn-danger" onclick="approveCurrent(false)">拒绝</button>
+        <button class="btn" onclick="approveCurrent(true)">允许</button>
+      </div>
+    </div>
+  </div>
+  <!-- 记忆弹窗（当前会话 AI 长期记忆，与 PDA 屏上 🧠 弹窗同一份数据） -->
+  <div class="mem-mask" id="memMask" style="display:none">
+    <div class="mem-box">
+      <h3>🧠 本会话记忆</h3>
+      <div class="mem-sub" id="memSub">AI 在对话中主动记住的现场信息（拓扑/结论/偏好），删除会话会一并清除</div>
+      <div class="mem-list" id="memList"></div>
+      <div class="mem-actions">
+        <button class="btn btn-danger" id="memClearBtn" onclick="memoryClear()">清空本会话记忆</button>
+        <button class="btn" onclick="closeMemory()">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+/* ============ 全局状态 ============ */
+var ws = null, authed = false, name = '', pwd = ''; // WebSocket / 登录态 / 账号 / 密码（重连复用）
+var mode = 'login';                                // 当前表单模式：'login' 登录 / 'register' 注册
+var pendingLoginMsg = null;                        // 登录/注册失败时暂存的具体提示（onclose 不覆盖）
+var boundDevice = null;                            // 当前绑定设备 ID
+var deviceOffline = false;                         // 绑定设备是否离线
+var reconnecting = false;                          // 控制端 ws 是否处于断线重连中
+var reconnectTry = 0;                              // 重连失败计数（决定退避档位；成功归零）
+var watchdogTimer = null;                          // 发送后无响应看门狗句柄（网络差时提示设备可能离线）
+var shellLevel = localStorage.getItem('rc_shell_level') || 'ask';  // root 审批档位：ask 每步审批 / session 会话允许 / off 关闭
+var token = localStorage.getItem('rc_token') || '';   // 登录令牌（刷新页面免重输密码；退出/被顶/失效时清除）
+var busy = false;                                  // 是否有进行中的 AI 轮次（决定发送/停止按钮）
+var items = [], msgSeq = 0, cur = null;            // 消息数组 / 自增 ID / 当前流式中的助手消息
+var pendingRoundUser = null;                       // 本轮刚发出的 user 气泡（ai_done.userTs 到达后补轮 ts，供单轮删除定位）
+var pendingApproval = null, approvalTimer = null;  // 待审批请求 / 审批倒计时句柄
+var _devOnlineMap = {};                            // 设备在线状态快照（用于检测离线→恢复）
+var sessions = [];                                 // 设备返回的会话列表（session_list_resp）
+var currentSessionId = null;                       // 设备当前会话 id
+var autoLoadHistory = false;                       // 绑定成功/删除当前会话后，自动加载新当前会话历史
+var loadMoreMode = false;                          // 本次 session_switch 是否为「加载更早」分页请求
+var earliestTs = 0;                                // 已加载历史中最早一条的 ts（分页锚点）
+var historyHasMore = false;                        // 是否还有更早历史可加载（session_switched.hasMore）
+var loadingMore = false;                           // 是否正在加载更早历史（防重入）
+var lastScrollHeight = 0;                          // 前插前消息列表内容高度（加载完成后恢复视口位置）
+
+function $(id){ return document.getElementById(id); }
+
+/* XSS 防护：转义 HTML 特殊字符（所有动态文本必须过此函数） */
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+/* 属性内转义：在 esc 基础上再转义单引号与反斜杠（用于内联 onclick 的字符串参数） */
+function escAttr(s){ return esc(s).replace(/'/g, '&#39;').replace(/\\/g, '&#92;'); }
+
+/* ============ 连接与登录/注册 ============ */
+
+/* 切换登录 / 注册标签（占位符、按钮文案与配色随模式变化，登录蓝/注册绿一眼可辨） */
+function switchTab(t){
+  mode = t;
+  $('tabLogin').className = 'tab' + (t === 'login' ? ' active-login' : '');
+  $('tabReg').className = 'tab' + (t === 'register' ? ' active-register' : '');
+  $('name').placeholder = (t === 'register') ? '账号' : '账号';
+  var btn = $('loginBtn');
+  btn.textContent = (t === 'register') ? '注 册' : '登 录';
+  btn.className = (t === 'register') ? 'mode-register' : 'mode-login';
+  showLoginMsg('', false);
+}
+
+/* 登录/注册框内提示（ok=true 蓝色成功提示，否则红色错误） */
+function showLoginMsg(text, ok){
+  var el = $('loginErr');
+  el.textContent = text;
+  el.style.color = ok ? '#1677ff' : '#e74c3c';
+}
+
+/* 登录 / 注册提交：校验输入后建连，onopen 按当前模式发对应帧 */
+function doLogin(){
+  name = $('name').value.trim();
+  pwd = $('pwd').value.trim();
+  if(!name){ showLoginMsg('请输入账号', false); return; }
+  if(!pwd){ showLoginMsg('请输入密码', false); return; }
+  pendingLoginMsg = null;
+  // 手动登录时清掉旧令牌（避免过期令牌抢在账号密码之前被发送）
+  token = '';
+  try{ localStorage.removeItem('rc_token'); }catch(e){}
+  // 若已有连接（如刚注册完的连接），先关闭再重连，避免连接叠加
+  if(ws){ try{ ws.onclose = null; ws.close(); }catch(e){} ws = null; }
+  connect();
+}
+
+function connect(){
+  ws = new WebSocket('ws://' + location.hostname + ':8091/ws');
+  ws.onopen = function(){
+    if(token){
+      // 有令牌：免密登录（刷新页面/自动重连走这里；失效时服务器回 login_fail 清令牌回登录框）
+      ws.send(JSON.stringify({t:'login', token: token}));
+    } else if(mode === 'register'){
+      ws.send(JSON.stringify({t:'register_account', name:name, pwd:pwd}));
+    } else {
+      ws.send(JSON.stringify({t:'login', name:name, pwd:pwd}));
+    }
+  };
+  ws.onmessage = function(ev){
+    var m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
+    handle(m);
+  };
+  ws.onclose = function(){
+    if(authed){
+      // 已登录后的断线：指数退避重连（5/10/20/40/60 秒封顶），历史消息不清
+      var delays = [5000, 10000, 20000, 40000, 60000];
+      reconnectTry++;
+      var d = delays[Math.min(reconnectTry - 1, delays.length - 1)];
+      $('connState').textContent = '连接断开，第 ' + reconnectTry + ' 次重连（' + Math.round(d / 1000) + ' 秒后）…';
+      reconnecting = true;
+      setTimeout(connect, d);
+    } else {
+      // 未登录断线：优先展示服务器已回的具体失败原因，否则提示连接失败
+      showLoginMsg(pendingLoginMsg || '连接失败，请检查网络', false);
+    }
+  };
+  ws.onerror = function(){
+    if(!authed){ showLoginMsg('连接失败，请检查网络', false); }
+  };
+}
+
+/* ============ 服务器帧分发 ============ */
+var lastEpoch = 0, lastSeq = 0;    // 设备 AI 帧序号（断线补发的重复帧按 (epoch,seq) 丢弃）
+function handle(m){
+  // 设备 AI 帧序号去重：断线瞬间的原始帧可能已被底层发出，重连后帧缓存又补发一次 → 丢弃重复
+  if(m.t === 'ai_event' || m.t === 'ai_done'){
+    if(typeof m.epoch === 'number' && typeof m.seq === 'number'){
+      if(m.epoch < lastEpoch || (m.epoch === lastEpoch && m.seq <= lastSeq)) return;
+      lastEpoch = m.epoch; lastSeq = m.seq;
+    }
+  }
+  if(m.t === 'register_ok'){
+    // 注册成功：切回登录标签后提示（switchTab 内部会清空提示，故先切后提示）
+    switchTab('login');
+    showLoginMsg('注册成功，请登录', true);
+    return;
+  }
+  if(m.t === 'register_fail'){
+    pendingLoginMsg = '注册失败：' + (m.reason || '');
+    showLoginMsg(pendingLoginMsg, false);
+    return;
+  }
+  if(m.t === 'login_ok'){
+    // 登录成功：保存令牌（刷新页面免重输密码），主界面切换由随后的 device_list 完成
+    if(m.token){
+      token = m.token;
+      try{ localStorage.setItem('rc_token', token); }catch(e){}
+    }
+    return;
+  }
+  if(m.t === 'login_fail'){
+    pendingLoginMsg = '登录失败：' + (m.reason || '账号或密码错误');
+    showLoginMsg(pendingLoginMsg, false);
+    // 令牌失效（如服务重启）：清掉本地令牌，下次走账号密码
+    token = '';
+    try{ localStorage.removeItem('rc_token'); }catch(e){}
+    return;
+  }
+  if(m.t === 'bind_fail'){
+    // 绑定被拒（设备不属于该账号 / 设备未绑定账号）：清绑定、回列表、弹窗提示原因
+    if(boundDevice){
+      boundDevice = null;
+      deviceOffline = false;
+      busy = false;
+      cur = null;
+      resetSessions();
+      hideChat();
+      renderDevices(window._devices || []);
+    }
+    alert('绑定失败：' + (m.reason || ''));
+    return;
+  }
+  if(m.t === 'device_list'){
+    // 登录成功即推 device_list（无独立 login_ok 帧）；收到即进入主界面
+    if(!authed){
+      authed = true;
+      $('loginBox').style.display = 'none';
+      $('mainBox').style.display = 'flex';  // 全屏左右布局：主界面用 flex 撑满视口
+    }
+    $('connState').textContent = '已连接';
+    reconnectTry = 0;
+    // 断线重连成功后：若此前绑定过设备，重新发 bind 并提示（历史不清）
+    if(reconnecting && boundDevice){
+      reconnecting = false;
+      ws.send(JSON.stringify({t:'bind', deviceId: boundDevice}));
+      if($('chatArea').style.display === 'block') appendSysMsg('连接已恢复，正在重新绑定设备…');
+    }
+    renderDevices(m.devices || []);
+    return;
+  }
+  if(m.t === 'bound'){
+    boundDevice = m.deviceId;
+    setOffline(false);
+    updateChatHeader();          // 标题行状态：连接中… → 在线
+    updateSendBtn();
+    renderDevices(window._devices || []);
+    requestSessionList();        // 绑定成功后拉取会话列表（与设备共用同一份 chat_sessions）
+    return;
+  }
+  if(m.t === 'offline'){
+    if(m.deviceId === boundDevice){
+      setOffline(true);
+      if(busy){ busy = false; updateSendBtn(); }   // 设备离线中断本轮，恢复按钮避免卡死
+      appendSysMsg('⚠ 设备已离线');
+    }
+    return;
+  }
+  if(m.t === 'kicked'){
+    // 被其他控制端顶掉：清绑定、返回设备列表
+    boundDevice = null;
+    deviceOffline = false;
+    busy = false;
+    cur = null;
+    closeMemory();
+    resetSessions();
+    hideChat();
+    renderDevices(window._devices || []);
+    showNotice('该设备已被其他控制端接管，已断开绑定');
+    return;
+  }
+  if(m.t === 'kicked_login'){
+    // 账号单点登录：本连接被同账号的新登录顶下线，回到登录页
+    authed = false;
+    boundDevice = null;
+    closeMemory();
+    token = '';
+    try{ localStorage.removeItem('rc_token'); }catch(e){}
+    busy = false;
+    cur = null;
+    try { ws.onclose = null; ws.close(); } catch(e) {}
+    $('mainBox').style.display = 'none';
+    $('loginBox').style.display = 'block';
+    $('loginErr').textContent = '该账号已在其他位置登录，本页面已退出';
+    $('loginErr').style.color = '#e74c3c';
+    return;
+  }
+  if(m.t === 'ai_event'){ if(boundDevice) handleAiEvent(m); return; }
+  if(m.t === 'ai_done'){ if(boundDevice) handleAiDone(m); return; }
+  if(m.t === 'approval_req'){ if(boundDevice) handleApproval(m); return; }
+  if(m.t === 'session_list_resp'){ if(boundDevice) renderSessions(m); return; }
+  if(m.t === 'session_switched'){ if(boundDevice) handleSwitched(m); return; }
+  if(m.t === 'session_err'){ if(boundDevice) handleSessionErr(m); return; }
+  if(m.t === 'memory_list_resp'){ if(boundDevice) handleMemoryListResp(m); return; }
+}
+
+/* ============ 设备列表 ============ */
+function renderDevices(devs){
+  window._devices = devs;
+  // 检测设备离线→恢复：若恢复的是绑定设备，自动重绑
+  devs.forEach(function(d){
+    if(d.online && _devOnlineMap[d.deviceId] === false && boundDevice === d.deviceId && deviceOffline){
+      setOffline(false);
+      ws.send(JSON.stringify({t:'bind', deviceId: d.deviceId}));
+      appendSysMsg('设备已恢复，重新连接中…');
+    }
+  });
+  _devOnlineMap = {};
+  devs.forEach(function(d){ _devOnlineMap[d.deviceId] = d.online; });
+
+  var area = $('deviceArea');
+  if(!devs.length){ area.innerHTML = '<div class="empty">暂无在线设备（PDA 需在设置页开启「🛰 远程控制」）</div>'; updateChatHeader(); return; }
+  var html = '';
+  devs.forEach(function(d){
+    var on = d.online;
+    var st = d.status || {};
+    var isBound = (boundDevice === d.deviceId);
+    // 已绑定的设备：显示不可点的「已绑定」+ 相邻的「断开绑定」；其余显示「连接」
+    var btns;
+    if(isBound){
+      btns = '<button class="btn" disabled>已绑定</button>'
+           + '<button class="btn btn-ghost" onclick="unbind()">断开绑定</button>';
+    } else {
+      btns = '<button class="btn" ' + (on ? '' : 'disabled') + ' onclick="bindDevice(\'' + escAttr(d.deviceId) + '\')">连接</button>';
+    }
+    html += '<div class="card">'
+      + '<span class="dot ' + (on ? 'on' : 'off') + '"></span>'
+      + '<div style="flex:1;min-width:0"><div class="name">' + esc(d.name) + '</div>'
+      + '<div class="sub">归属：' + (d.account ? esc(d.account) : '未绑定') + ' · ' + esc(d.deviceId) + ' · ' + esc(d.model || '') + (st.ssid ? ' · ' + esc(st.ssid) : '') + (typeof st.battery === 'number' && st.battery >= 0 ? ' · 电量 ' + st.battery + '%' : '') + '</div></div>'
+      + btns
+      + '</div>';
+  });
+  area.innerHTML = html;
+  updateChatHeader();
+}
+
+function findDevice(id){
+  var ds = window._devices || [];
+  for(var i = 0; i < ds.length; i++){ if(ds[i].deviceId === id) return ds[i]; }
+  return null;
+}
+
+/* ============ 绑定 / 断开 / 离线 ============ */
+
+function bindDevice(id){
+  boundDevice = id;
+  deviceOffline = false;
+  closeMemory();                     // 换设备即关闭记忆弹窗
+  items = []; cur = null;             // 新绑定清空历史（换设备 = 全新会话）
+  $('chatMsgs').innerHTML = '';
+  resetSessions();                    // 新绑定重置会话选择（换设备 = 全新会话列表）
+  autoLoadHistory = true;             // 绑定成功后拉列表并自动加载当前会话历史
+  showChat();
+  updateChatHeader();
+  setOffline(false);
+  updateSendBtn();
+  ws.send(JSON.stringify({t:'bind', deviceId: id}));
+  $('chatOnline').textContent = '连接中…';   // 状态放标题行，不往消息列表塞两条状态
+  renderDevices(window._devices || []);
+}
+
+function unbind(){
+  // v1 无解绑协议：仅本地清绑定、关闭对话区（服务器端绑定残留无害，下次 bind 会覆盖）
+  boundDevice = null;
+  deviceOffline = false;
+  busy = false;
+  cur = null;
+  closeMemory();
+  resetSessions();
+  hideChat();
+  renderDevices(window._devices || []);
+  showNotice('已断开绑定');
+}
+
+function showChat(){ $('chatArea').style.display = 'block'; }
+function hideChat(){
+  $('chatArea').style.display = 'none';
+  items = []; cur = null;
+  $('chatMsgs').innerHTML = '';
+}
+
+function setOffline(off){
+  deviceOffline = off;
+  $('offlineBanner').style.display = off ? 'block' : 'none';
+  $('chatText').disabled = off;
+  updateSendBtn();
+  updateChatHeader();
+}
+
+function updateChatHeader(){
+  if(!boundDevice) return;
+  var dev = findDevice(boundDevice);
+  $('chatTitle').textContent = dev ? dev.name : boundDevice;
+  $('chatDot').className = 'dot ' + (dev && dev.online && !deviceOffline ? 'on' : 'off');
+  $('chatOnline').textContent = (dev && dev.online && !deviceOffline) ? '在线' : (dev ? '离线' : '连接中…');
+}
+
+function showNotice(text){
+  var n = $('notice');
+  n.textContent = text;
+  n.style.display = 'block';
+  clearTimeout(n._t);
+  n._t = setTimeout(function(){ n.style.display = 'none'; }, 3000);
+}
+
+/* ============ 会话选择器（控制端与 PDA 屏上 AI 页共用同一份 chat_sessions） ============ */
+
+/* 重置本地会话选择状态（换设备 / 断开绑定 / 被顶掉时） */
+function resetSessions(){
+  sessions = [];
+  currentSessionId = null;
+  autoLoadHistory = false;
+  pendingRoundUser = null;      // 清掉待补轮 ts 的引用（换设备后旧 ai_done 不再关联）
+  $('sessionList').innerHTML = '';
+  updateSessionBtns();
+}
+
+/* 请求设备下发会话列表（{t:"session_list"}） */
+function requestSessionList(){
+  if(ws && boundDevice) ws.send(JSON.stringify({t:'session_list'}));
+}
+
+/* 渲染会话卡片列表（session_list_resp）：每会话一张卡（标题+时间+条数），当前会话高亮，点击切换 */
+function renderSessions(m){
+  sessions = m.sessions || [];
+  currentSessionId = m.currentId || null;
+  var list = $('sessionList');
+  var html = '';
+  sessions.forEach(function(s){
+    var t = s.title || '新会话';
+    var time = fmtTime(s.updatedAt);
+    var active = (s.id === currentSessionId) ? ' active' : '';
+    html += '<div class="sess-card' + active + '" data-sid="' + escAttr(s.id) + '" onclick="sessionSwitchCard(\'' + escAttr(s.id) + '\')">'
+      + '<div class="st">' + esc(t) + '</div>'
+      + '<div class="sm">' + (time ? esc(time) : '') + (s.count ? ' · ' + s.count + ' 条' : '') + '</div>'
+      + '</div>';
+  });
+  list.innerHTML = html;
+  // 绑定成功 / 删除当前会话后：自动切到当前会话加载其历史
+  if(autoLoadHistory && currentSessionId){
+    autoLoadHistory = false;
+    ws.send(JSON.stringify({t:'session_switch', id: currentSessionId}));
+  }
+  updateSessionBtns();
+}
+
+/* 点击会话卡片切换：清空消息区，等 session_switched 渲染历史 */
+function sessionSwitchCard(id){
+  if(!id || id === currentSessionId) return;
+  if(busy || deviceOffline || !boundDevice) return;   // 忙碌/离线时禁止切会话（与按钮禁用联动）
+  currentSessionId = id;
+  closeMemory();                                      // 记忆弹窗针对旧会话，切换即关闭
+  clearChatMsgs();
+  highlightSessionCard();
+  ws.send(JSON.stringify({t:'session_switch', id: id}));
+}
+
+/* 高亮当前会话卡片 */
+function highlightSessionCard(){
+  var cards = $('sessionList').children;
+  for(var i = 0; i < cards.length; i++){
+    var c = cards[i];
+    if(c.getAttribute('data-sid') === currentSessionId) c.className = 'sess-card active';
+    else c.className = 'sess-card';
+  }
+}
+
+/* 设备切换会话成功（session_switched）：分页加载更早时前插渲染，首屏切换时全量替换 */
+function handleSwitched(m){
+  currentSessionId = m.id || null;
+  highlightSessionCard();                    // 同步高亮当前会话卡片
+  if(loadMoreMode){
+    // 「加载更早」点击分页：新历史前插到消息列表顶部，并用锚点消息恢复视口位置（不跳动、不丢消息）
+    loadMoreMode = false;
+    var msgs = $('chatMsgs');
+    var anchor = msgs.firstChild;             // 前插前顶部第一条消息元素（锚点）
+    var anchorTop = anchor
+      ? (anchor.getBoundingClientRect().top - msgs.getBoundingClientRect().top + msgs.scrollTop) : 0;
+    prependHistory(m.history || []);
+    loadingMore = false;
+    if(anchor){
+      // 前插后把锚点消息拉回原视口位置（浏览器对 scrollTop 赋值即时生效，无滚动动画）
+      var newTop = anchor.getBoundingClientRect().top - msgs.getBoundingClientRect().top + msgs.scrollTop;
+      msgs.scrollTop += (newTop - anchorTop);
+    }
+  } else {
+    renderHistory(m.history || []);
+  }
+  historyHasMore = m.hasMore === true;
+  updateLoadMoreBar();
+  updateSessionBtns();
+}
+
+/* 更新「加载更早」按钮可见性（仅当还有更早历史时显示） */
+function updateLoadMoreBar(){
+  var bar = $('loadMoreBar');
+  if(!bar) return;
+  bar.style.display = historyHasMore ? 'block' : 'none';
+  var btn = $('loadMoreBtn');
+  if(btn){ btn.disabled = false; btn.textContent = '↑ 加载更早的消息'; }
+}
+
+/* 「加载更早」分页（点击按钮）：发 beforeTs 取更早的 5 条 */
+function loadMoreHistory(){
+  if(busy || deviceOffline || !currentSessionId || loadingMore || !historyHasMore) return;
+  loadingMore = true;
+  loadMoreMode = true;
+  lastScrollHeight = $('chatMsgs').scrollHeight; // 记录前插前内容高度（加载完成后恢复视口位置）
+  var btn = $('loadMoreBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '加载中…'; }
+  ws.send(JSON.stringify({t:'session_switch', id: currentSessionId, beforeTs: earliestTs}));
+}
+
+/* 前插渲染更早历史（保持时间顺序：更早的在上方）；roundTs 按所属轮 user 的 ts 打标（单轮删除定位） */
+function prependHistory(history){
+  var msgs = $('chatMsgs');
+  var built = [];
+  var lastUserTs = 0;
+  // 先按时间正序（旧→新）构建 DOM 与 roundTs 配对（assistant 随前一条 user 同轮）
+  history.forEach(function(h){
+    var item;
+    if(h.role === 'user'){
+      lastUserTs = h.ts || 0;
+      item = { id: 'm' + (++msgSeq), role: 'user', text: h.text || '', roundTs: lastUserTs, el: null };
+    } else if(h.role === 'assistant'){
+      item = {
+        id: 'm' + (++msgSeq), role: 'assistant', roundTs: lastUserTs,
+        text: h.text || '', reasoning: h.reasoning || '', reasoningCollapsed: true,
+        toolCards: (h.toolCalls || []).map(function(tc){
+          return { name: tc.name || '工具', input: tc.input || '', output: tc.output || '', collapsed: true };
+        }),
+        statusText: '', statusStart: 0, statusInterval: null,
+        error: false, roundSec: (typeof h.roundSec === 'number') ? h.roundSec : null, usage: null, done: true, el: null
+      };
+    } else {
+      item = { id: 'm' + (++msgSeq), role: 'sys', text: h.text || '', roundTs: 0, el: null };
+    }
+    item.el = document.createElement('div');
+    item.el.className = 'msg ' + item.role;
+    item.el.innerHTML = htmlFor(item);
+    built.push(item);
+  });
+  // 倒序插到列表最前：built 的最后一条（最新）先插，最后 built[0]（最旧）落在 items[0]——顺序保序
+  for(var i = built.length - 1; i >= 0; i--){
+    items.unshift(built[i]);
+    msgs.insertBefore(built[i].el, msgs.firstChild); // 前插到消息列表顶部
+  }
+  // 更新 earliestTs（前插后最早一条 = 新历史的第一条）
+  if(history.length) earliestTs = history[0].ts || earliestTs;
+}
+
+/* 会话操作失败（session_err）：提示并重新同步列表 + 重拉当前会话历史恢复本地状态 */
+function handleSessionErr(m){
+  showNotice('会话操作失败：' + (m.reason || ''));
+  requestSessionList();
+  if(currentSessionId) ws.send(JSON.stringify({t:'session_switch', id: currentSessionId}));
+}
+
+/* 新建会话（{t:"session_new"}）：新会话为空，先清本地消息区 */
+function sessionNew(){
+  if(busy || deviceOffline || !boundDevice) return;
+  clearChatMsgs();
+  ws.send(JSON.stringify({t:'session_new'}));
+}
+
+/* 重命名当前会话（{t:"session_rename"}，titleCustom=true 后新消息不覆盖标题） */
+function sessionRename(){
+  if(busy || deviceOffline || !currentSessionId) return;
+  var cur = null;
+  for(var i = 0; i < sessions.length; i++){ if(sessions[i].id === currentSessionId){ cur = sessions[i]; break; } }
+  var t = prompt('输入新标题：', cur ? cur.title : '');
+  if(t === null) return;
+  t = t.trim();
+  if(!t) return;
+  ws.send(JSON.stringify({t:'session_rename', id: currentSessionId, title: t}));
+}
+
+/* 删除当前会话（{t:"session_delete"}，连带删记忆/档案/凭据） */
+function sessionDelete(){
+  if(busy || deviceOffline || !currentSessionId) return;
+  if(!confirm('确认删除当前会话？将连带删除该会话的记忆、档案与凭据。')) return;
+  autoLoadHistory = true; // 删除后设备会切到新的当前会话，自动加载其历史
+  clearChatMsgs();
+  ws.send(JSON.stringify({t:'session_delete', id: currentSessionId}));
+}
+
+/* 清空当前会话消息（{t:"session_clear"}，标题保留；记忆/档案/凭据保留） */
+function sessionClear(){
+  if(busy || deviceOffline || !currentSessionId) return;
+  if(!confirm('确认清空当前会话消息？（记忆与档案保留）')) return;
+  clearChatMsgs();
+  ws.send(JSON.stringify({t:'session_clear', id: currentSessionId}));
+}
+
+/* ============ 记忆弹窗（当前会话 AI 长期记忆，与 PDA 屏上 🧠 弹窗同一份数据） ============ */
+
+/* 打开记忆弹窗并请求当前会话记忆（{t:"memory_list"}） */
+function openMemory(){
+  if(!boundDevice || deviceOffline || !currentSessionId) return;
+  $('memMask').style.display = 'flex';
+  $('memList').innerHTML = '<div class="mem-empty">加载中…</div>';
+  requestMemoryList();
+}
+
+/* 请求设备下发当前会话记忆 */
+function requestMemoryList(){
+  if(ws && boundDevice) ws.send(JSON.stringify({t:'memory_list'}));
+}
+
+function closeMemory(){
+  $('memMask').style.display = 'none';
+}
+
+/* memory_list_resp：渲染当前会话记忆；id 不一致说明会话已切，直接关闭 */
+function handleMemoryListResp(m){
+  if($('memMask').style.display !== 'flex') return;    // 弹窗未打开：静默丢弃
+  if(m.id && m.id !== currentSessionId){ closeMemory(); return; }
+  renderMemoryList(m.items || []);
+}
+
+/* 渲染记忆列表（单删按钮按下标取暂存列表的 text） */
+function renderMemoryList(items){
+  var list = $('memList');
+  $('memSub').textContent = items.length
+    ? ('共 ' + items.length + ' 条 · AI 在对话中主动记住的现场信息，删除会话会一并清除')
+    : 'AI 在对话中主动记住的现场信息（拓扑/结论/偏好），删除会话会一并清除';
+  $('memClearBtn').disabled = items.length === 0;
+  if(!items.length){
+    list.innerHTML = '<div class="mem-empty">暂无记忆（AI 判断重要的现场信息会自动记住）</div>';
+    window._memItems = [];
+    return;
+  }
+  var html = '';
+  items.forEach(function(m, i){
+    html += '<div class="mem-item">'
+      + '<div class="mt">' + esc(m.text || '') + '<span class="mtime">' + fmtTime(m.ts) + '</span></div>'
+      + '<button class="mdel" onclick="memoryDelete(' + i + ')" title="删除这条">✕</button>'
+      + '</div>';
+  });
+  list.innerHTML = html;
+  window._memItems = items;
+}
+
+/* 单条删除（按文本精确匹配，设备端删完回新列表） */
+function memoryDelete(i){
+  var items = window._memItems || [];
+  var it = items[i];
+  if(!it) return;
+  if(!confirm('删除这条记忆？')) return;
+  ws.send(JSON.stringify({t:'memory_delete', text: it.text}));
+}
+
+/* 清空本会话记忆（{t:"memory_clear"}，设备端清完回新列表） */
+function memoryClear(){
+  if(!confirm('确认清空本会话的全部记忆？')) return;
+  ws.send(JSON.stringify({t:'memory_clear'}));
+}
+
+/* 清空本地消息区（会话切换/新建/清空/删除前调用） */
+function clearChatMsgs(){
+  items = []; cur = null;
+  $('chatMsgs').innerHTML = '';
+}
+
+/* 全量渲染历史（session_switched 首屏）：user 右气泡、assistant 左气泡带思考折叠/工具卡/耗时（折叠态）；
+   roundTs 按所属轮 user 的 ts 打标（单轮删除定位） */
+function renderHistory(history){
+  clearChatMsgs();
+  var lastUserTs = 0;
+  history.forEach(function(h){
+    var item;
+    if(h.role === 'user'){
+      lastUserTs = h.ts || 0;
+      item = { id: 'm' + (++msgSeq), role: 'user', text: h.text || '', roundTs: lastUserTs, el: null };
+    } else if(h.role === 'assistant'){
+      item = {
+        id: 'm' + (++msgSeq), role: 'assistant', roundTs: lastUserTs,
+        text: h.text || '', reasoning: h.reasoning || '', reasoningCollapsed: true, // 历史思考默认折叠
+        toolCards: (h.toolCalls || []).map(function(tc){
+          return { name: tc.name || '工具', input: tc.input || '', output: tc.output || '', collapsed: true }; // 工具卡默认折叠
+        }),
+        statusText: '', statusStart: 0, statusInterval: null,
+        error: false, roundSec: (typeof h.roundSec === 'number') ? h.roundSec : null, usage: null, done: true, el: null
+      };
+    } else {
+      item = { id: 'm' + (++msgSeq), role: 'sys', text: h.text || '', roundTs: 0, el: null };
+    }
+    items.push(item);
+    renderMsg(item);
+  });
+  if(history.length) earliestTs = history[0].ts || 0; // 记录最早一条 ts（「加载更早」分页锚点）
+  scrollBottom();
+}
+
+/* 更新会话按钮可用态（busy/离线/无当前会话时禁用；卡片点击由 sessionSwitchCard 自行守卫） */
+function updateSessionBtns(){
+  var noDev = !boundDevice || deviceOffline;
+  $('btnNew').disabled = noDev || busy;
+  $('btnRename').disabled = noDev || busy || !currentSessionId;
+  $('btnDel').disabled = noDev || busy || !currentSessionId;
+  $('btnClear').disabled = noDev || busy || !currentSessionId;
+  $('btnMem').disabled = noDev || busy || !currentSessionId;
+  // 忙碌/离线时整列会话卡变灰禁点（视觉联动）
+  $('sessionList').className = 'session-list' + (noDev || busy ? ' locked' : '');
+}
+
+/* 时间戳格式化（updatedAt 毫秒 → M/D HH:mm，用于会话下拉标题后的时间） */
+function fmtTime(ms){
+  if(!ms) return '';
+  var d = new Date(ms);
+  var p = function(n){ return (n < 10 ? '0' : '') + n; };
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+/* ============ 发送 / 停止 ============ */
+
+/* 发送后无响应看门狗：只在设备被服务器判离线（offline 帧）时提示下线；
+   AI 长任务（审计/全网检测等 60-120 秒静默执行）不判下线——设备在线则静默续期继续等 */
+function armWatchdog(){
+  clearWatchdog();
+  watchdogTimer = setTimeout(function(){
+    if(!busy){ return; }
+    if(deviceOffline){
+      appendSysMsg('⚠ 设备已离线（现场断网/断电/App 被关），本轮任务可能中断。可点『停止』放弃，或等设备恢复。');
+    } else {
+      armWatchdog();   // 设备仍在线：大概率是长任务静默执行，不误判下线，续期继续等
+    }
+  }, 150000);
+}
+function clearWatchdog(){
+  if(watchdogTimer){ clearTimeout(watchdogTimer); watchdogTimer = null; }
+}
+
+function sendMsg(){
+  if(busy || deviceOffline || !boundDevice) return;
+  var el = $('chatText');
+  var text = el.value.trim();
+  if(!text) return;
+  pushUser(text);
+  pendingRoundUser = items[items.length - 1];   // 本轮 user 气泡（ai_done 带 userTs 后补轮 ts）
+  cur = newAssistant();
+  busy = true;
+  updateSendBtn();
+  ws.send(JSON.stringify({t:'chat', text: text}));
+  armWatchdog();                 // 网络差看门狗：2.5 分钟无响应提示
+  el.value = '';
+  scrollBottom();
+}
+
+function stop(){
+  // 停止当前轮：发 {t:"stop"}，等 ai_done(error="stopped") 到达后恢复按钮
+  ws.send(JSON.stringify({t:'stop'}));
+  appendSysMsg('已发送停止指令…');
+}
+
+function updateSendBtn(){
+  var b = $('sendBtn');
+  if(busy){
+    b.textContent = '停止';
+    b.className = 'btn stop';
+  } else {
+    b.textContent = '发送';
+    b.className = 'btn';
+  }
+  b.disabled = deviceOffline || !boundDevice;
+  updateSessionBtns();          // 会话按钮/下拉随 busy/离线/绑定状态联动禁用
+}
+
+/* ============ 消息模型与渲染 ============ */
+function pushUser(text){
+  var item = { id: 'm' + (++msgSeq), role: 'user', text: text, roundTs: 0, el: null };
+  items.push(item);
+  renderMsg(item);
+}
+
+function newAssistant(){
+  var item = {
+    id: 'm' + (++msgSeq), role: 'assistant', roundTs: 0,
+    text: '', reasoning: '', reasoningCollapsed: false,
+    toolCards: [], statusText: '', statusStart: 0, statusInterval: null,
+    error: false, roundSec: null, usage: null, done: false, el: null
+  };
+  items.push(item);
+  renderMsg(item);
+  return item;
+}
+
+function appendSysMsg(text){
+  var item = { id: 'm' + (++msgSeq), role: 'sys', text: text, roundTs: 0, el: null };
+  items.push(item);
+  renderMsg(item);
+  scrollBottom();
+}
+
+/* ============ 单轮删除（三端同步：Web 控制页 / App 内置控制页 / PDA 屏上 AI 页） ============ */
+
+/* 点击气泡右上角 ✕：删除该轮 user+assistant，设备端同步移除，不再进入 AI 上下文 */
+function delRound(id){
+  var item = findItem(id);
+  if(!item) return;
+  if(busy || deviceOffline){ showNotice('任务执行中，稍后再删'); return; }
+  if(!item.roundTs){ showNotice('该轮还在生成，完成后再删'); return; }
+  if(!confirm('删除这一轮对话？设备端将同步移除这轮消息，不再进入 AI 上下文。')) return;
+  var ts = item.roundTs;
+  var idx = items.indexOf(item);
+  if(idx < 0) return;
+  // 定位该轮起点：被点是 user 则它就是起点；被点是 assistant 则向前找最近的 user
+  var start = idx;
+  if(item.role === 'assistant'){
+    while(start > 0 && items[start - 1].role !== 'user') start--;
+    if(start > 0 && items[start - 1].role === 'user') start--;
+  }
+  // 该轮结束 = 下一条 user 之前（系统提示 sys 保留不删）
+  var end = start + 1;
+  while(end < items.length && items[end].role !== 'user') end++;
+  var removed = [];
+  for(var i = end - 1; i >= start; i--){
+    if(items[i].role === 'sys') continue;
+    removed.push(items[i]);
+    items.splice(i, 1);
+  }
+  removed.forEach(function(r){ if(r.el && r.el.parentNode) r.el.parentNode.removeChild(r.el); });
+  recalcEarliestTs();
+  ws.send(JSON.stringify({t:'round_delete', id: currentSessionId, ts: ts}));
+}
+
+/* 重算「加载更早」锚点：剩余消息里最早的轮 ts（全部删光则回 0） */
+function recalcEarliestTs(){
+  var min = 0;
+  for(var i = 0; i < items.length; i++){
+    var t = items[i].roundTs;
+    if(t && (!min || t < min)) min = t;
+  }
+  earliestTs = min;
+}
+
+function findItem(id){
+  for(var i = items.length - 1; i >= 0; i--){ if(items[i].id === id) return items[i]; }
+  return null;
+}
+
+function findCur(){
+  for(var i = items.length - 1; i >= 0; i--){ if(items[i].role === 'assistant' && !items[i].done) return items[i]; }
+  return null;
+}
+
+/* 渲染单条消息（首建 DOM 容器，之后只更新其 innerHTML；状态行计时器单独更新不重渲染） */
+function renderMsg(item){
+  if(!item.el){
+    item.el = document.createElement('div');
+    item.el.className = 'msg ' + item.role;
+    $('chatMsgs').appendChild(item.el);
+  }
+  item.el.innerHTML = htmlFor(item);
+  if(item.role === 'assistant' && item.statusText && !item.done) ensureStatusTimer(item);
+}
+
+/* 生成消息 HTML（assistant 气泡内按顺序：状态行→思考→工具卡→正文→耗时/缓存）；
+   已完成轮次的气泡右上角带 ✕ 单轮删除按钮（三端同步） */
+function htmlFor(item){
+  var del = item.roundTs ? '<span class="del-round" data-act="delRound" data-id="' + item.id + '" title="删除这一轮对话">✕</span>' : '';
+  if(item.role === 'user') return '<div class="bubble">' + esc(item.text) + del + '</div>';
+  if(item.role === 'sys') return '<div class="sysmsg">' + esc(item.text) + '</div>';
+
+  var h = '';
+  // a. 状态行
+  if(item.statusText && !item.done){
+    var sec = item.statusStart ? Math.floor((Date.now() - item.statusStart) / 1000) : 0;
+    h += '<div class="status-line" id="st-' + item.id + '">⚙ ' + esc(item.statusText) + '（已用 ' + sec + ' 秒）</div>';
+  }
+  // b. 思考折叠
+  if(item.reasoning){
+    h += '<div class="think">'
+      + '<div class="think-head" data-act="toggleThink" data-id="' + item.id + '">💭 思考过程 <span>' + (item.reasoningCollapsed ? '▸' : '▾') + '</span></div>'
+      + '<div class="think-body' + (item.reasoningCollapsed ? ' hide' : '') + '">' + esc(item.reasoning) + '</div>'
+      + '</div>';
+  }
+  // c. 工具折叠卡
+  if(item.toolCards.length){
+    h += '<div class="tools">';
+    for(var i = 0; i < item.toolCards.length; i++){
+      var c = item.toolCards[i];
+      var n = i + 1, m = item.toolCards.length;
+      h += '<div class="tool">'
+        + '<div class="tool-head" data-act="toggleTool" data-id="' + item.id + '" data-ti="' + i + '">🔧 工具 ' + n + '/' + m + '：' + esc(c.name) + ' <span>' + (c.collapsed ? '▸' : '▾') + '</span></div>'
+        + '<div class="tool-body' + (c.collapsed ? ' hide' : '') + '">';
+      if(c.input) h += '<div class="tool-io"><span class="tool-io-label">入参：</span>' + esc(c.input) + '</div>';
+      if(c.output) h += '<pre class="tool-out">' + esc(c.output) + '</pre>';
+      h += '</div></div>';
+    }
+    h += '</div>';
+  }
+  // d. 正文（与上方思考/工具块隔开一点）
+  var bodyText = item.text;
+  var bodyClass = 'body' + (item.error ? ' err' : '');
+  if(!item.done && !bodyText) h += '<div class="body dim">⏳ 生成中…</div>';
+  else h += '<div class="' + bodyClass + '">' + esc(bodyText) + '</div>';
+  // e. 耗时（缓存命中不在此处——显示在对话区顶部状态行，与 App 布局一致）
+  var meta = [];
+  if(item.roundSec != null && item.roundSec > 0) meta.push('本轮 ' + item.roundSec + ' 秒');
+  if(meta.length) h += '<div class="meta">' + meta.join(' · ') + '</div>';
+  return '<div class="bubble">' + h + del + '</div>';
+}
+
+/* 状态行计时器：每秒刷新「已用 N 秒」，工具结束（tool_result/ai_done）时清除 */
+function ensureStatusTimer(item){
+  if(item.statusInterval) return;
+  item.statusInterval = setInterval(function(){
+    var el = document.getElementById('st-' + item.id);
+    if(!el){ clearInterval(item.statusInterval); item.statusInterval = null; return; }
+    var sec = item.statusStart ? Math.floor((Date.now() - item.statusStart) / 1000) : 0;
+    el.textContent = '⚙ ' + (item.statusText || '正在调用工具…') + '（已用 ' + sec + ' 秒）';
+  }, 1000);
+}
+function clearStatusTimer(item){
+  if(item.statusInterval){ clearInterval(item.statusInterval); item.statusInterval = null; }
+}
+
+function scrollBottom(){
+  var c = $('chatMsgs');
+  c.scrollTop = c.scrollHeight;
+}
+
+/* ============ ai_event 流式事件 ============ */
+function handleAiEvent(m){
+  // 三端实时同步：PDA 屏上发起的轮次（user_msg）→ 本地渲染 user 气泡 + 流式占位，发送按钮变停止
+  if(m.kind === 'user_msg'){
+    if(busy){ return; }            // 控制端已有轮次进行中（并发互斥，设备端也会拒绝）
+    pushUser(String(m.data || ''));
+    cur = newAssistant();
+    busy = true;
+    updateSendBtn();
+    armWatchdog();
+    scrollBottom();
+    return;
+  }
+  var item = cur || findCur();
+  if(!item) return;
+  armWatchdog();                 // 收到设备帧：刷新看门狗（设备在线且在执行）
+  var kind = m.kind, data = m.data;
+  if(kind === 'reasoning'){
+    item.reasoning += String(data || '');
+    renderMsg(item);
+  } else if(kind === 'delta'){
+    // 正文增量（工具轮过渡语/最终回答）：覆盖式写入（与 App 端一致，最终 ai_done 还会再覆盖一次）
+    item.text = String(data || '');
+    renderMsg(item);
+  } else if(kind === 'status'){
+    item.statusText = String(data || '正在调用工具…');
+    item.statusStart = Date.now();
+    clearStatusTimer(item);
+    ensureStatusTimer(item);
+    renderMsg(item);
+  } else if(kind === 'tool_log'){
+    handleToolLog(item, String(data || ''));
+    renderMsg(item);
+  } else if(kind === 'tool_result'){
+    handleToolResult(item, data);
+    clearStatusTimer(item);       // 工具结束，状态行消失
+    item.statusText = '';
+    renderMsg(item);
+  } else if(kind === 'usage'){
+    // 缓存命中显示在对话区顶部状态行（与 App 布局一致，不进气泡）
+    var u = parseUsage(data);
+    var el = $('cacheStat');
+    if(el) el.textContent = '⚡ 缓存命中 ' + u.rate + '%（命中 ' + u.hitK + 'K/未命中 ' + u.missK + 'K）';
+  } else if(kind === 'balance'){
+    // 账户余额（每轮完成后设备端推送，显示在对话区顶部状态行）
+    var b = $('balanceStat');
+    if(b) b.textContent = '💰 余额 ' + String(data || '');
+  }
+  scrollBottom();
+}
+
+/* tool_log：以「▶ 开始工具 X」开头建新卡，后续行追加到当前卡输出；新卡建立时旧卡自动折叠（最后一张默认展开） */
+function handleToolLog(item, line){
+  if(line.indexOf('▶ 开始工具 ') === 0){
+    var name = line.slice('▶ 开始工具 '.length).split('（')[0];
+    for(var i = 0; i < item.toolCards.length; i++) item.toolCards[i].collapsed = true;
+    item.toolCards.push({ name: name, input: '', output: line, collapsed: false });
+  } else if(item.toolCards.length){
+    var last = item.toolCards[item.toolCards.length - 1];
+    last.output += '\n' + line;
+  }
+}
+
+/* tool_result：把 input/output 填进对应卡（按 name 匹配最后一张；无匹配则新建） */
+function handleToolResult(item, data){
+  var d = asObj(data);
+  var name = d.name || d.toolName || '';
+  var input = d.input || d.inputBrief || '';
+  var output = d.output || '';
+  if(!name && !input && !output) return;
+  var card = null;
+  for(var i = item.toolCards.length - 1; i >= 0; i--){
+    if(name && item.toolCards[i].name === name){ card = item.toolCards[i]; break; }
+  }
+  if(card){
+    if(input && !card.input) card.input = input;
+    if(output) card.output = (card.output ? card.output + '\n' : '') + '=== 结果 ===\n' + output;
+  } else {
+    item.toolCards.push({ name: name || '工具', input: input, output: output, collapsed: false });
+  }
+}
+
+/* usage：解析缓存命中 token 数（兼容多种字段命名） */
+function parseUsage(d){
+  var o = asObj(d);
+  var hit = num(o.cacheHitTokens) || num(o.hitTokens) || num(o.cacheHit) || num(o.cache_hit_tokens) || 0;
+  var miss = num(o.cacheMissTokens) || num(o.missTokens) || num(o.cacheMiss) || num(o.cache_miss_tokens) || 0;
+  var total = hit + miss;
+  var rate = total > 0 ? Math.round(hit / total * 100) : 0;
+  return { rate: rate, hitK: Math.round(hit / 1024), missK: Math.round(miss / 1024) };
+}
+
+/* 通用取值：data 可能是对象，也可能是 JSON 字符串，兜底空对象 */
+function asObj(d){
+  if(d && typeof d === 'object') return d;
+  if(typeof d === 'string'){ try{ return JSON.parse(d); }catch(e){ return {}; } }
+  return {};
+}
+function num(v){ var n = Number(v); return isFinite(n) ? n : 0; }
+
+/* ============ ai_done 一轮完成 ============ */
+function handleAiDone(m){
+  var item = cur || findCur();
+  if(!item) return;
+  clearStatusTimer(item);
+  item.statusText = '';
+  if(m.error){
+    if(m.error === 'stopped'){
+      // 手动停止：显示部分内容 + 停止标记（非红色）
+      item.error = false;
+      item.text = (m.text || '') + (m.text ? '\n\n' : '') + '⏹ 已手动停止';
+    } else {
+      // 其他错误：红色错误文案（保留已产生过程，正文带错误原因）
+      item.error = true;
+      item.text = (m.text ? m.text + '\n\n' : '') + '❌ ' + String(m.error);
+    }
+  } else {
+    item.error = false;
+    item.text = m.text || '';
+  }
+  item.roundSec = (typeof m.roundSec === 'number') ? m.roundSec : null;
+  item.done = true;
+  // 本轮落盘 ts（设备端回传）：user/assistant 气泡补上轮 ts，右上角出现 ✕ 单轮删除按钮
+  if(typeof m.userTs === 'number' && m.userTs > 0){
+    item.roundTs = m.userTs;
+    if(pendingRoundUser){
+      pendingRoundUser.roundTs = m.userTs;
+      renderMsg(pendingRoundUser);
+    }
+  }
+  pendingRoundUser = null;
+  // 完成后自动折叠思考过程与全部工具卡（与 App 一致，点击可再展开）
+  item.reasoningCollapsed = true;
+  for(var i = 0; i < item.toolCards.length; i++) item.toolCards[i].collapsed = true;
+  cur = null;
+  busy = false;
+  clearWatchdog();               // 本轮结束：取消看门狗
+  updateSendBtn();
+  renderMsg(item);
+  scrollBottom();
+  // 记忆弹窗开着时自动刷新（本轮 AI 可能 remember_info 记住了新内容）
+  if($('memMask').style.display === 'flex') requestMemoryList();
+}
+
+/* ============ 审批弹窗（root 命令按档位：每步审批弹窗 / 会话允许自动放行 / 关闭自动拒绝） ============ */
+
+/* root 审批档位循环切换：每步审批 → 会话允许 → 关闭 → 每步审批（存 localStorage，刷新保持） */
+function cycleShellLevel(){
+  shellLevel = shellLevel === 'ask' ? 'session' : (shellLevel === 'session' ? 'off' : 'ask');
+  try{ localStorage.setItem('rc_shell_level', shellLevel); }catch(e){}
+  refreshShellLevelBtn();
+}
+
+/* 刷新档位按钮文案与配色 */
+function refreshShellLevelBtn(){
+  var b = $('shellLevelBtn');
+  if(!b) return;
+  b.title = 'ARP 类命令（arpspoof/arping）免审批直接执行；其余 root 命令按此档位处理';
+  if(shellLevel === 'ask'){ b.textContent = '🛡 root 审批：每步审批'; b.style.color = ''; }
+  else if(shellLevel === 'session'){ b.textContent = '🛡 root 审批：会话允许'; b.style.color = '#e67e22'; }
+  else { b.textContent = '🛡 root 审批：已关闭'; b.style.color = '#e74c3c'; }
+}
+
+function handleApproval(m){
+  // 档位自动应答：关闭=静默拒绝；会话允许=静默放行（结果标记追加到对应工具卡输出后）
+  if(shellLevel === 'off'){
+    ws.send(JSON.stringify({t:'approve', reqId: m.reqId, allow: false}));
+    appendApprovalMark('🛡 root 审批：关闭，已自动拒绝');
+    return;
+  }
+  if(shellLevel === 'session'){
+    ws.send(JSON.stringify({t:'approve', reqId: m.reqId, allow: true}));
+    appendApprovalMark('🛡 root 审批：会话允许，已自动放行');
+    return;
+  }
+  // 每步审批（默认）：弹窗（已有挂起审批则先自动拒绝旧的——v1 单弹窗）
+  if(pendingApproval) doApprove(pendingApproval.reqId, false, true);
+  pendingApproval = { reqId: m.reqId, toolName: m.toolName || '', command: m.command || '', deadline: Date.now() + 120 * 1000, item: cur || findCur() };
+  showApproval();
+}
+
+/* 审批结果标记追加到对应轮次的最后一个工具卡输出后面（不再单独发系统气泡）；无工具卡时退化为气泡 */
+function appendApprovalMark(text){
+  var item = cur || findCur();
+  if(item && item.toolCards && item.toolCards.length){
+    var last = item.toolCards[item.toolCards.length - 1];
+    last.output = (last.output ? last.output + '\n' : '') + text;
+    renderMsg(item);
+  } else {
+    appendSysMsg(text);
+  }
+}
+
+function showApproval(){
+  $('approvalTool').textContent = pendingApproval.toolName ? ('工具：' + pendingApproval.toolName) : 'root_shell 命令审批';
+  $('approvalCmd').textContent = pendingApproval.command;
+  $('approvalMask').style.display = 'flex';
+  startApprovalTimer();
+}
+
+function hideApproval(){
+  $('approvalMask').style.display = 'none';
+  if(approvalTimer){ clearInterval(approvalTimer); approvalTimer = null; }
+}
+
+/* 用户点允许/拒绝 */
+function approveCurrent(allow){
+  if(pendingApproval) doApprove(pendingApproval.reqId, allow, false);
+}
+
+/* 发送审批结果；silent=true 表示超时自动拒绝。结果标记追加到对应工具卡输出后面（用户拍板：
+   "已允许执行"应跟在工具调用文字后面，不单独发系统气泡） */
+function doApprove(reqId, allow, silent){
+  ws.send(JSON.stringify({t:'approve', reqId: reqId, allow: allow}));
+  if(pendingApproval && pendingApproval.reqId === reqId){
+    var item = pendingApproval.item || cur || findCur();
+    if(item && item.toolCards && item.toolCards.length){
+      var last = item.toolCards[item.toolCards.length - 1];
+      last.output = (last.output ? last.output + '\n' : '') +
+        (allow ? '✔ 已允许执行' : (silent ? '⏱ 审批超时，已自动拒绝' : '✖ 已拒绝执行'));
+      renderMsg(item);
+    } else if(!silent){
+      appendSysMsg(allow ? '已允许执行' : '已拒绝执行');
+    }
+    pendingApproval = null;
+  }
+  hideApproval();
+}
+
+/* 120 秒倒计时，超时自动拒绝 */
+function startApprovalTimer(){
+  if(approvalTimer) clearInterval(approvalTimer);
+  approvalTimer = setInterval(function(){
+    if(!pendingApproval){ clearInterval(approvalTimer); approvalTimer = null; return; }
+    var remain = Math.max(0, Math.ceil((pendingApproval.deadline - Date.now()) / 1000));
+    $('approvalTimer').textContent = remain + ' 秒后自动拒绝';
+    if(remain <= 0){
+      clearInterval(approvalTimer);
+      approvalTimer = null;
+      doApprove(pendingApproval.reqId, false, true);
+    }
+  }, 500);
+}
+
+/* ============ 交互绑定 ============ */
+function logout(){
+  // 吊销服务器令牌 + 清本地令牌，回登录框（刷新后不再自动登录）
+  if(token){ try{ ws.send(JSON.stringify({t:'logout', token: token})); }catch(e){} }
+  token = '';
+  try{ localStorage.removeItem('rc_token'); }catch(e){}
+  if(ws){ try{ ws.onclose = null; ws.close(); }catch(e){} }
+  authed = false; name = ''; pwd = '';
+  location.reload();
+}
+
+/* 移动端抽屉侧边栏：汉堡按钮开合（桌面端该按钮隐藏；仅切换 .open 类，无其他副作用） */
+function toggleSidebar(){ var s=document.getElementById('sidebar'); if(s) s.classList.toggle('open'); }
+
+/* 折叠按钮事件委托（思考/工具卡），避免内联 onclick 引号转义问题 */
+document.addEventListener('click', function(e){
+  var el = e.target;
+  if(!el || !el.getAttribute) return;
+  var act = el.getAttribute('data-act');
+  if(!act) return;
+  var item = findItem(el.getAttribute('data-id'));
+  if(!item) return;
+  if(act === 'toggleThink'){
+    item.reasoningCollapsed = !item.reasoningCollapsed;
+    renderMsg(item);
+  } else if(act === 'toggleTool'){
+    var ti = parseInt(el.getAttribute('data-ti'), 10);
+    var c = item.toolCards[ti];
+    if(c){ c.collapsed = !c.collapsed; renderMsg(item); }
+  } else if(act === 'delRound'){
+    delRound(item.id);
+  }
+});
+
+/* 输入框：回车发送（Shift+Enter 换行）；中文输入法组合态回车不误发 */
+$('chatText').addEventListener('keydown', function(e){
+  if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){
+    e.preventDefault();
+    if(busy) stop(); else sendMsg();
+  }
+});
+
+/* 页面加载：root 审批档位按钮按存档值刷新 + 有令牌自动免密登录 */
+refreshShellLevelBtn();
+if(token) connect();
+</script>
+</body>
+</html>
+
+

@@ -1,0 +1,6 @@
+# CBM 索引排除：构建产物与二进制资产（非源码）
+build/
+.gradle/
+.aoci/
+app/src/main/assets/
+*.html

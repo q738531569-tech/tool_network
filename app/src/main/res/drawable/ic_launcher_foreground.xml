@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  装维通启动图标前景：发光 Wi-Fi 信号三弧 + 底部数据节点
+  = 宽带/无线网络（装维核心业务）+ 节点连线（设备管理）；
+  白色弧带青色光晕（科技感），橙色原点 = 工具箱/信号源。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Wi-Fi 三弧（圆心 54,66；角度 -45°~45° 向上开口） -->
+    <!-- 外弧光晕（青色 18% 透明，宽 8） -->
+    <path
+        android:strokeColor="#2B00E5FF"
+        android:strokeWidth="8"
+        android:strokeLineCap="round"
+        android:pathData="M37,48.5 A24,24 0 0,1 71,48.5" />
+    <!-- 外弧（白，宽 4.5） -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M37,48.5 A24,24 0 0,1 71,48.5" />
+    <!-- 中弧（白，宽 4.5） -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M41.9,53.4 A17,17 0 0,1 66.1,53.4" />
+    <!-- 内弧（白，宽 4.5） -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M47.3,58.3 A10,10 0 0,1 60.7,58.3" />
+    <!-- 信号原点（橙色 = 信号源/工具箱，半径 5） -->
+    <path
+        android:fillColor="#FF8F00"
+        android:pathData="M54,63 A5,5 0 1,0 54,73 A5,5 0 1,0 54,63 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,65.5 A2,2 0 1,0 54,69.5 A2,2 0 1,0 54,65.5 Z" />
+
+    <!-- 底部：数据节点连线（设备管理感，白 55% 透明） -->
+    <path
+        android:strokeColor="#8CFFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:pathData="M30,84 L78,84" />
+    <!-- 左节点 -->
+    <path
+        android:fillColor="#8CFFFFFF"
+        android:pathData="M36,84 A3,3 0 1,0 42,84 A3,3 0 1,0 36,84 Z" />
+    <!-- 右节点 -->
+    <path
+        android:fillColor="#8CFFFFFF"
+        android:pathData="M66,84 A3,3 0 1,0 72,84 A3,3 0 1,0 66,84 Z" />
+</vector>

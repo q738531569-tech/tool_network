@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App 名称（桌面图标显示）：装维通（用户拍板，短 + 贴行业） -->
+    <string name="app_name">装维通</string>
+</resources>

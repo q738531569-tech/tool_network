@@ -1,0 +1,16 @@
+{
+  "name": "toolbox-remote-server",
+  "version": "1.0.0",
+  "description": "装维工具箱 远程AI控制 WebSocket 中转服务（零业务依赖，仅 ws 库）",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 路径映射：暴露缓存目录下的 OTA 下载安装包（update.apk），
+  供系统安装器（ACTION_INSTALL_PACKAGE）通过 content:// URI 读取。
+  authority = ${applicationId}.fileprovider（见 AndroidManifest.xml）
+
+  ⚠ path 必须是【目录】而非具体文件：FileProvider 计算相对路径时会执行
+  path.substring(rootPath.length() + 1)，若 path 指向具体文件且文件路径恰好
+  等于 rootPath（如 /data/data/包名/cache/update.apk），+1 会越界抛
+  StringIndexOutOfBoundsException（length=49; index=50），调不起系统安装器。
+  用 path="." 暴露整个 cache 目录（该目录仅 OTA 下载文件，可接受）。
+-->
+<paths>
+    <cache-path
+        name="apk"
+        path="." />
+</paths>

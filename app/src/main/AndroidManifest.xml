@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- OTA 更新：调系统安装器安装 APK（Android 8+ 必须声明，否则提示"没有权限安装"） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- 网络探测与诊断 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 审计/检测期间防止 CPU 休眠中断抓包（normal 权限，无需运行时申请） -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- Wi-Fi 扫描（Android 9+ 硬性要求） -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- BLE 扫描（Android 12+ 运行时权限；neverForLocation 声明扫描结果不用于定位） -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- 旧版本蓝牙权限（minSdk 26 兼容；Android 12+ 已被上面两个替代） -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- 组播锁（SADP 发现海康设备需要） -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- 扫码工具：相机实时预览（运行时申请） -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 风暴值守告警震动（环路检测值守模式） -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 通知（Android 13+） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 报告导出：Android 9- 写公共下载目录需要（Android 10+ 走 MediaStore 免权限） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+    <!-- 抓包分析（M2）：前台服务，targetSdk 34 需声明 dataSync 类型 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 远程控制：引导用户把本应用加入电池优化白名单（后台无限制），保证放现场常驻不被冻结 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- SOS 紧急求救：短信求救（SEND_SMS）、位置信息（定位已声明）、一键拨打联系人（CALL_PHONE） -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
+    <!-- 硬件特性声明（required=false）：无摄像头/无电话硬件（如 ChromeOS、部分平板）也能安装，
+         功能页内按能力降级提示（SOS 短信/拨号/手电在无对应硬件时返回可读说明） -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+
+    <application
+        android:name=".ToolboxApp"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Toolbox"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Toolbox">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 免 root 抓包前台服务：必须带 BIND_VPN_SERVICE 权限与 android.net.VpnService action -->
+        <service
+            android:name="com.installer.toolbox.core.capture.PacketCaptureService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
+        <!-- 远程 AI 控制（M1 通道）：前台服务常驻连接服务器中转，
+             dataSync 类型 + FOREGROUND_SERVICE_DATA_SYNC 权限（targetSdk 34 要求） -->
+        <service
+            android:name=".remote.RemoteControlService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- OTA 更新：非 root 安装 APK 时经 FileProvider 分享给系统安装器
+             （仅暴露 cacheDir/update.apk，路径映射见 res/xml/file_paths.xml） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>
