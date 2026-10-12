@@ -249,43 +249,21 @@ class AiViewModel(application: Application) : AndroidViewModel(application) {
                 } else if (command.contains("arpspoof") || command.contains("arping")) {
                     null // ARP 白名单：免审批
                 } else {
-                    // 远程控制开启时：审批转移控制端（本地弹窗静默，控制端按档位自动应答或弹窗）
-                    val remoteOn = getApplication<Application>()
-                        .getSharedPreferences("remote", Context.MODE_PRIVATE)
-                        .getBoolean("enabled", false)
-                    if (remoteOn) {
-                        val reqId = UUID.randomUUID().toString()
-                        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
-                        pendingRemoteApprovals[reqId] = deferred
-                        AiSyncBus.publish(AiSyncBus.Event(kind = "approval", reqId = reqId, command = command))
-                        val ok = try {
-                            withTimeoutOrNull(120_000L) { deferred.await() }
-                        } finally {
-                            pendingRemoteApprovals.remove(reqId)
-                        }
-                        when (ok) {
-                            null -> "远程控制端未响应审批，已自动拒绝"
-                            true -> null
-                            else -> "远程控制端拒绝了该 root 命令的执行。"
-                        }
-                    } else {
-                        // 本地弹窗审批（现状）
-                        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
-                        _pendingShell.value = PendingShell(command, deferred)
-                        val ok = try {
-                            deferred.await()
-                        } finally {
-                            _pendingShell.value = null
-                        }
-                        if (ok) null else "用户拒绝了该 root 命令的执行。"
+                    // 本机发起的 root 命令一律本机弹窗审批（PDA 反馈 id=84 修复：
+                    // 之前远程开关开着时本地轮次审批被桥接到控制端，本机操作要等远端确认/超时拒绝，
+                    // 影响本地排查效率；远程轮次的审批走 RemoteAiSession approval_req 帧，天然在控制端）
+                    val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                    _pendingShell.value = PendingShell(command, deferred)
+                    val ok = try {
+                        deferred.await()
+                    } finally {
+                        _pendingShell.value = null
                     }
+                    if (ok) null else "用户拒绝了该 root 命令的执行。"
                 }
             }
         }
     }
-
-    /** 本地轮次（PDA 屏发起）的远程审批挂起表：reqId → 等控制端 approve 结果 */
-    private val pendingRemoteApprovals = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Boolean>>()
 
     /** 正在检测服务器连接中 */
     private val _checkingServer = MutableStateFlow(false)
@@ -463,7 +441,6 @@ class AiViewModel(application: Application) : AndroidViewModel(application) {
                 msg.copy(text = text, roundSec = e.roundSec)
             }
             "stop" -> stopCurrentRound()   // 控制端点停止：终止本地轮次
-            "approval_resp" -> pendingRemoteApprovals.remove(e.reqId)?.complete(e.allow)
         }
     }
 
@@ -741,7 +718,8 @@ class AiViewModel(application: Application) : AndroidViewModel(application) {
                         .put("role", m.role)
                         .put("text", m.text)
                         .put("ts", m.timestamp)
-                    // 思考链、工具调用记录、本轮耗时持久化（界面折叠展示、重启可恢复）
+                    // 思考链、工具调用记录、本轮耗时持久化（界面折叠展示、重启可恢复；
+                    // 2026-08-18 修复：工具入参/输出落盘放宽至 4000/8000，此前 2000/4000 截断长输出）
                     m.reasoning?.let { msgObj.put("reasoning", it) }
                     if (m.roundSec > 0) msgObj.put("roundSec", m.roundSec)
                     if (m.toolCalls.isNotEmpty()) {
@@ -752,8 +730,8 @@ class AiViewModel(application: Application) : AndroidViewModel(application) {
                                     put(
                                         JSONObject()
                                             .put("name", tc.name)
-                                            .put("input", tc.input.take(2000))
-                                            .put("output", tc.output.take(4000))
+                                            .put("input", tc.input.take(4000))
+                                            .put("output", tc.output.take(8000))
                                     )
                                 }
                             }

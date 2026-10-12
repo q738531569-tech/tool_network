@@ -205,6 +205,7 @@
           <!-- root 审批档位（点击循环切换：每步审批→会话允许→关闭；ARP 类命令免审批）+ 余额/缓存命中状态 -->
           <div class="auth-row">
             <button class="btn-mini" id="shellLevelBtn" onclick="cycleShellLevel()">🛡 root 审批：每步审批</button>
+            <button class="btn-mini btn-mini-danger" id="upgradeBtn" onclick="remoteUpgrade()" style="margin-left:8px">⬆ 强制升级</button>
             <span class="sub" id="balanceStat" style="float:right;color:#888;margin-right:8px"></span>
             <span class="sub" style="float:right;color:#888;margin-right:4px" id="shellLevelHint">ARP 免审批</span>
             <span class="sub" id="cacheStat" style="float:right;color:#888;margin-right:8px"></span>
@@ -267,6 +268,36 @@ var busy = false;                                  // 是否有进行中的 AI �
 var items = [], msgSeq = 0, cur = null;            // 消息数组 / 自增 ID / 当前流式中的助手消息
 var pendingRoundUser = null;                       // 本轮刚发出的 user 气泡（ai_done.userTs 到达后补轮 ts，供单轮删除定位）
 var pendingApproval = null, approvalTimer = null;  // 待审批请求 / 审批倒计时句柄
+var pendingApproveCache = null;                    // 审批暂存（断线时点击审批，重连后自动补发，防帧丢失）
+var pendingFrames = [];                            // 操作帧暂存队列（断线时用户操作：发消息/切会话/停止/删轮等，重连后按序补发）
+var _frameWarnTs = 0;                              // 断线暂存提示防抖
+var _lastHistoryReload = 0;                        // ai_done 兜底重拉历史的防抖时间戳
+
+/* 统一发送出口：断线（网络波动 WS 断开）时操作帧入队暂存，重连绑定成功后 flushPendingFrames 按序补发。
+   连接生命周期帧（login/bind/session_list/logout）不走这里——由重连流程自己处理。 */
+function sendFrame(obj){
+  if(ws && ws.readyState === 1){
+    ws.send(JSON.stringify(obj));
+    return true;
+  }
+  pendingFrames.push(obj);
+  var now = Date.now();
+  if(now - _frameWarnTs > 4000){                 // 防抖：4 秒内只提示一次
+    _frameWarnTs = now;
+    appendSysMsg('⚠ 网络已断开，操作已暂存，重连后自动补发');
+  }
+  return false;
+}
+
+/* 重连并绑定成功后补发暂存的操作帧（按序；设备端 busy 会拒 chat 等，属正常保护） */
+function flushPendingFrames(){
+  if(!pendingFrames.length) return;
+  if(!ws || ws.readyState !== 1 || !boundDevice) return;
+  var frames = pendingFrames;
+  pendingFrames = [];
+  frames.forEach(function(f){ try{ ws.send(JSON.stringify(f)); }catch(e){} });
+  if(frames.length) appendSysMsg('已补发断线期间暂存的 ' + frames.length + ' 个操作');
+}
 var _devOnlineMap = {};                            // 设备在线状态快照（用于检测离线→恢复）
 var sessions = [];                                 // 设备返回的会话列表（session_list_resp）
 var currentSessionId = null;                       // 设备当前会话 id
@@ -418,8 +449,10 @@ function handle(m){
     // 断线重连成功后：若此前绑定过设备，重新发 bind 并提示（历史不清）
     if(reconnecting && boundDevice){
       reconnecting = false;
+      autoLoadHistory = true;   // 控制端重连后也拉取当前会话最新历史（设备端期间可能有新消息）
       ws.send(JSON.stringify({t:'bind', deviceId: boundDevice}));
       if($('chatArea').style.display === 'block') appendSysMsg('连接已恢复，正在重新绑定设备…');
+      else showNotice('连接已恢复');   // 未进聊天区也提示重连成功
     }
     renderDevices(m.devices || []);
     return;
@@ -431,6 +464,16 @@ function handle(m){
     updateSendBtn();
     renderDevices(window._devices || []);
     requestSessionList();        // 绑定成功后拉取会话列表（与设备共用同一份 chat_sessions）
+    // 【修复 2026-08-17】绑定恢复 = 设备在线可收发：统一补发断线期间暂存的审批与操作帧
+    flushApproveCache();
+    flushPendingFrames();
+    // 请求设备重发未决审批（断线丢 approval_req 时，设备端审批请求重发 → 控制端重新弹窗）
+    sendFrame({t:'pending_approval_query'});
+    // 重连后设备正在执行任务（可能等待 root 审批）：提示用户留意
+    var dev = findDevice(boundDevice);
+    if(dev && dev.status && dev.status.busy){
+      showNotice('设备正在执行任务（可能等待 root 审批），请留意');
+    }
     return;
   }
   if(m.t === 'offline'){
@@ -477,15 +520,44 @@ function handle(m){
   if(m.t === 'session_switched'){ if(boundDevice) handleSwitched(m); return; }
   if(m.t === 'session_err'){ if(boundDevice) handleSessionErr(m); return; }
   if(m.t === 'memory_list_resp'){ if(boundDevice) handleMemoryListResp(m); return; }
+  if(m.t === 'app_update_resp'){ if(boundDevice) handleAppUpdateResp(m); return; }
+  if(m.t === 'ack'){
+    // 【新增】服务端送达确认（chat/approve）：失败才提示（成功静默，避免刷屏）
+    if(!m.ok && boundDevice){
+      appendSysMsg('⚠ 操作未送达设备：' + (m.reason || '未知原因'));
+    }
+    return;
+  }
 }
 
 /* ============ 设备列表 ============ */
+/* 设备掉线/上线提示防抖：同一设备 6 秒内只提示一次（设备频繁断连重连不刷屏） */
+var _lastDeviceNotice = {};
+function deviceNotice(key, text){
+  var now = Date.now();
+  if(_lastDeviceNotice[key] && now - _lastDeviceNotice[key] < 6000) return; // 防抖
+  _lastDeviceNotice[key] = now;
+  if($('chatArea').style.display === 'block') appendSysMsg(text);
+  else showNotice(text);   // 未进聊天区时用顶部提示条
+}
 function renderDevices(devs){
   window._devices = devs;
-  // 检测设备离线→恢复：若恢复的是绑定设备，自动重绑
+  // 检测设备掉线/上线（与上次列表对比）→ 实时提示；首次加载（prev 为 undefined）不提示
   devs.forEach(function(d){
-    if(d.online && _devOnlineMap[d.deviceId] === false && boundDevice === d.deviceId && deviceOffline){
+    var prev = _devOnlineMap[d.deviceId];
+    var nm = d.name || d.deviceId;
+    if(prev === true && !d.online){
+      deviceNotice('off:' + d.deviceId, '设备掉线：' + nm);
+    } else if(prev === false && d.online && boundDevice !== d.deviceId){
+      deviceNotice('on:' + d.deviceId, '设备上线：' + nm);
+    }
+  });
+  // 检测设备离线→恢复：若恢复的是绑定设备，自动重绑 + 自动加载当前会话历史（消息同步）
+  // （不依赖 deviceOffline 标志——控制端自己断线错过 offline 帧时该标志未置位，按状态变化判定更稳）
+  devs.forEach(function(d){
+    if(d.online && _devOnlineMap[d.deviceId] === false && boundDevice === d.deviceId){
       setOffline(false);
+      autoLoadHistory = true;   // 【修复】重连恢复后自动切当前会话拉取消息历史（否则控制页消息不同步）
       ws.send(JSON.stringify({t:'bind', deviceId: d.deviceId}));
       appendSysMsg('设备已恢复，重新连接中…');
     }
@@ -511,7 +583,7 @@ function renderDevices(devs){
     html += '<div class="card">'
       + '<span class="dot ' + (on ? 'on' : 'off') + '"></span>'
       + '<div style="flex:1;min-width:0"><div class="name">' + esc(d.name) + '</div>'
-      + '<div class="sub">归属：' + (d.account ? esc(d.account) : '未绑定') + ' · ' + esc(d.deviceId) + ' · ' + esc(d.model || '') + (st.ssid ? ' · ' + esc(st.ssid) : '') + (typeof st.battery === 'number' && st.battery >= 0 ? ' · 电量 ' + st.battery + '%' : '') + '</div></div>'
+      + '<div class="sub">归属：' + (d.account ? esc(d.account) : '未绑定') + ' · ' + esc(d.deviceId) + ' · ' + esc(d.model || '') + (st.ssid ? ' · ' + esc(st.ssid) : '') + (typeof st.battery === 'number' && st.battery >= 0 ? ' · 电量 ' + st.battery + '%' : '') + (st.busy ? ' · ⏳ 执行中' : '') + '</div></div>'
       + btns
       + '</div>';
   });
@@ -624,7 +696,7 @@ function renderSessions(m){
   // 绑定成功 / 删除当前会话后：自动切到当前会话加载其历史
   if(autoLoadHistory && currentSessionId){
     autoLoadHistory = false;
-    ws.send(JSON.stringify({t:'session_switch', id: currentSessionId}));
+    sendFrame({t:'session_switch', id: currentSessionId});
   }
   updateSessionBtns();
 }
@@ -637,7 +709,7 @@ function sessionSwitchCard(id){
   closeMemory();                                      // 记忆弹窗针对旧会话，切换即关闭
   clearChatMsgs();
   highlightSessionCard();
-  ws.send(JSON.stringify({t:'session_switch', id: id}));
+  sendFrame({t:'session_switch', id: id});
 }
 
 /* 高亮当前会话卡片 */
@@ -693,7 +765,7 @@ function loadMoreHistory(){
   lastScrollHeight = $('chatMsgs').scrollHeight; // 记录前插前内容高度（加载完成后恢复视口位置）
   var btn = $('loadMoreBtn');
   if(btn){ btn.disabled = true; btn.textContent = '加载中…'; }
-  ws.send(JSON.stringify({t:'session_switch', id: currentSessionId, beforeTs: earliestTs}));
+  sendFrame({t:'session_switch', id: currentSessionId, beforeTs: earliestTs});
 }
 
 /* 前插渲染更早历史（保持时间顺序：更早的在上方）；roundTs 按所属轮 user 的 ts 打标（单轮删除定位） */
@@ -738,14 +810,14 @@ function prependHistory(history){
 function handleSessionErr(m){
   showNotice('会话操作失败：' + (m.reason || ''));
   requestSessionList();
-  if(currentSessionId) ws.send(JSON.stringify({t:'session_switch', id: currentSessionId}));
+  if(currentSessionId) sendFrame({t:'session_switch', id: currentSessionId});
 }
 
 /* 新建会话（{t:"session_new"}）：新会话为空，先清本地消息区 */
 function sessionNew(){
   if(busy || deviceOffline || !boundDevice) return;
   clearChatMsgs();
-  ws.send(JSON.stringify({t:'session_new'}));
+  sendFrame({t:'session_new'});
 }
 
 /* 重命名当前会话（{t:"session_rename"}，titleCustom=true 后新消息不覆盖标题） */
@@ -757,7 +829,7 @@ function sessionRename(){
   if(t === null) return;
   t = t.trim();
   if(!t) return;
-  ws.send(JSON.stringify({t:'session_rename', id: currentSessionId, title: t}));
+  sendFrame({t:'session_rename', id: currentSessionId, title: t});
 }
 
 /* 删除当前会话（{t:"session_delete"}，连带删记忆/档案/凭据） */
@@ -766,7 +838,7 @@ function sessionDelete(){
   if(!confirm('确认删除当前会话？将连带删除该会话的记忆、档案与凭据。')) return;
   autoLoadHistory = true; // 删除后设备会切到新的当前会话，自动加载其历史
   clearChatMsgs();
-  ws.send(JSON.stringify({t:'session_delete', id: currentSessionId}));
+  sendFrame({t:'session_delete', id: currentSessionId});
 }
 
 /* 清空当前会话消息（{t:"session_clear"}，标题保留；记忆/档案/凭据保留） */
@@ -774,7 +846,7 @@ function sessionClear(){
   if(busy || deviceOffline || !currentSessionId) return;
   if(!confirm('确认清空当前会话消息？（记忆与档案保留）')) return;
   clearChatMsgs();
-  ws.send(JSON.stringify({t:'session_clear', id: currentSessionId}));
+  sendFrame({t:'session_clear', id: currentSessionId});
 }
 
 /* ============ 记忆弹窗（当前会话 AI 长期记忆，与 PDA 屏上 🧠 弹窗同一份数据） ============ */
@@ -789,7 +861,7 @@ function openMemory(){
 
 /* 请求设备下发当前会话记忆 */
 function requestMemoryList(){
-  if(ws && boundDevice) ws.send(JSON.stringify({t:'memory_list'}));
+  if(boundDevice) sendFrame({t:'memory_list'});
 }
 
 function closeMemory(){
@@ -832,13 +904,13 @@ function memoryDelete(i){
   var it = items[i];
   if(!it) return;
   if(!confirm('删除这条记忆？')) return;
-  ws.send(JSON.stringify({t:'memory_delete', text: it.text}));
+  sendFrame({t:'memory_delete', text: it.text});
 }
 
 /* 清空本会话记忆（{t:"memory_clear"}，设备端清完回新列表） */
 function memoryClear(){
   if(!confirm('确认清空本会话的全部记忆？')) return;
-  ws.send(JSON.stringify({t:'memory_clear'}));
+  sendFrame({t:'memory_clear'});
 }
 
 /* 清空本地消息区（会话切换/新建/清空/删除前调用） */
@@ -926,7 +998,7 @@ function sendMsg(){
   cur = newAssistant();
   busy = true;
   updateSendBtn();
-  ws.send(JSON.stringify({t:'chat', text: text}));
+  sendFrame({t:'chat', text: text});
   armWatchdog();                 // 网络差看门狗：2.5 分钟无响应提示
   el.value = '';
   scrollBottom();
@@ -934,7 +1006,7 @@ function sendMsg(){
 
 function stop(){
   // 停止当前轮：发 {t:"stop"}，等 ai_done(error="stopped") 到达后恢复按钮
-  ws.send(JSON.stringify({t:'stop'}));
+  sendFrame({t:'stop'});
   appendSysMsg('已发送停止指令…');
 }
 
@@ -1006,7 +1078,7 @@ function delRound(id){
   }
   removed.forEach(function(r){ if(r.el && r.el.parentNode) r.el.parentNode.removeChild(r.el); });
   recalcEarliestTs();
-  ws.send(JSON.stringify({t:'round_delete', id: currentSessionId, ts: ts}));
+  sendFrame({t:'round_delete', id: currentSessionId, ts: ts});
 }
 
 /* 重算「加载更早」锚点：剩余消息里最早的轮 ts（全部删光则回 0） */
@@ -1209,7 +1281,16 @@ function num(v){ var n = Number(v); return isFinite(n) ? n : 0; }
 /* ============ ai_done 一轮完成 ============ */
 function handleAiDone(m){
   var item = cur || findCur();
-  if(!item) return;
+  if(!item){
+    // 【修复 2026-08-17】重连竞态：重连后 autoLoadHistory 的 renderHistory 清空了消息区，
+    // 而进行中的轮次未落盘不在历史里，ai_done 找不到归属消息 → 静默丢弃导致"当前轮对话消失"
+    // （断开重绑后历史已落盘才显示）。兜底：立即重拉当前会话历史（该轮此时已落盘），恢复完整消息
+    if(currentSessionId && Date.now() - _lastHistoryReload > 1500){
+      _lastHistoryReload = Date.now();
+      ws.send(JSON.stringify({t:'session_switch', id: currentSessionId}));
+    }
+    return;
+  }
   clearStatusTimer(item);
   item.statusText = '';
   if(m.error){
@@ -1259,6 +1340,23 @@ function cycleShellLevel(){
   refreshShellLevelBtn();
 }
 
+/* 远程强制升级：下发设备检查更新+下载+root 静默安装+重启（2026-08-18） */
+function remoteUpgrade(){
+  if(!boundDevice){ showNotice('请先选择设备'); return; }
+  if(!confirm('确认强制升级该设备到最新版本？（下载+安装+自动重启应用）')) return;
+  sendFrame({t:'app_update', action:'check_and_install'});
+  appendSysMsg('⬆ 已下发升级指令，等待设备响应…');
+}
+
+/* 升级回执：失败显示原因；成功显示进度（下载中/安装中/完成） */
+function handleAppUpdateResp(m){
+  if(!m.ok){ appendSysMsg('⚠ 升级失败：' + (m.reason || '未知原因')); return; }
+  if(m.phase === 'downloading'){ appendSysMsg('⬇ 正在下载 ' + (m.version||'') + ' …'); }
+  else if(m.phase === 'installing'){ appendSysMsg('📦 正在安装 ' + (m.version||'') + '，设备将重启…'); }
+  else if(m.phase === 'done'){ appendSysMsg('✅ 升级完成 ' + (m.version||'') + '：' + (m.reason||'已重启应用')); }
+  else { appendSysMsg('⬆ 升级响应：' + (m.reason || '进行中')); }
+}
+
 /* 刷新档位按钮文案与配色 */
 function refreshShellLevelBtn(){
   var b = $('shellLevelBtn');
@@ -1279,6 +1377,8 @@ function handleApproval(m){
   if(shellLevel === 'session'){
     ws.send(JSON.stringify({t:'approve', reqId: m.reqId, allow: true}));
     appendApprovalMark('🛡 root 审批：会话允许，已自动放行');
+    // 【安全可见性】自动放行也醒目提示（用户可能忘记处于"会话允许"档位，避免"审批被悄悄绕过"的观感）
+    showNotice('⚠ 已按「会话允许」自动放行 root 命令：' + String(m.command || '').slice(0, 50));
     return;
   }
   // 每步审批（默认）：弹窗（已有挂起审批则先自动拒绝旧的——v1 单弹窗）
@@ -1319,6 +1419,23 @@ function approveCurrent(allow){
 /* 发送审批结果；silent=true 表示超时自动拒绝。结果标记追加到对应工具卡输出后面（用户拍板：
    "已允许执行"应跟在工具调用文字后面，不单独发系统气泡） */
 function doApprove(reqId, allow, silent){
+  // 【修复 2026-08-17】审批送达可靠性：网络切换（如 WiFi→移动网络）瞬间 ws 断开，
+  // 直接 ws.send 会丢帧，设备端收不到审批会一直挂起（120s 超时才自动拒绝，期间 busy 卡住会话）。
+  // 断线时点审批 → 暂存本地，重连成功后自动补发（设备端 reqId 120s 内仍有效，超时后补发为无害 no-op）。
+  if(!ws || ws.readyState !== 1){
+    pendingApproveCache = { reqId: reqId, allow: allow, item: (pendingApproval && pendingApproval.item) || cur || findCur() };
+    var item = pendingApproveCache.item;
+    if(item && item.toolCards && item.toolCards.length){
+      var last = item.toolCards[item.toolCards.length - 1];
+      last.output = (last.output ? last.output + '\n' : '') + '⏳ 网络已断开，审批已暂存，重连后自动送达';
+      renderMsg(item);
+    } else if(!silent){
+      appendSysMsg('⚠ 网络已断开，审批已暂存，重连后自动送达');
+    }
+    pendingApproval = null;
+    hideApproval();
+    return;
+  }
   ws.send(JSON.stringify({t:'approve', reqId: reqId, allow: allow}));
   if(pendingApproval && pendingApproval.reqId === reqId){
     var item = pendingApproval.item || cur || findCur();
@@ -1333,6 +1450,23 @@ function doApprove(reqId, allow, silent){
     pendingApproval = null;
   }
   hideApproval();
+}
+
+/* 重连成功后补发暂存的审批（设备在线时调用；设备端 reqId 已超时则 no-op 无害） */
+function flushApproveCache(){
+  if(!pendingApproveCache) return;
+  if(!ws || ws.readyState !== 1) return;
+  var c = pendingApproveCache;
+  pendingApproveCache = null;
+  ws.send(JSON.stringify({t:'approve', reqId: c.reqId, allow: c.allow}));
+  var item = c.item || cur || findCur();
+  if(item && item.toolCards && item.toolCards.length){
+    var last = item.toolCards[item.toolCards.length - 1];
+    if(last.output && last.output.indexOf('⏳ 网络已断开') !== -1){
+      last.output = last.output.replace(/⏳ 网络已断开，审批已暂存，重连后自动送达/, c.allow ? '✔ 已允许执行（重连后送达）' : '✖ 已拒绝执行（重连后送达）');
+      renderMsg(item);
+    }
+  }
 }
 
 /* 120 秒倒计时，超时自动拒绝 */

@@ -1,5 +1,7 @@
 package com.installer.toolbox.ui.screens.home
 
+import com.installer.toolbox.ui.navigation.Routes
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -8,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.IconButton
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CenterFocusWeak
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -61,7 +65,6 @@ fun HomeScreen(
             }
             val titleColor = if (isDark) Color.White else Color(0xFF0D2B56)
             val subColor = if (isDark) Color.White.copy(alpha = 0.8f) else Color(0xFF0D2B56).copy(alpha = 0.75f)
-            val decoColor = if (isDark) Color.White.copy(alpha = 0.22f) else Color(0xFF1565C0).copy(alpha = 0.28f)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -85,26 +88,19 @@ fun HomeScreen(
                         color = subColor
                     )
                 }
-                // 右侧装饰：大 Wi-Fi 信号图标（半透明，科技点缀）
-                Icon(
-                    imageVector = Icons.Filled.Wifi,
-                    contentDescription = null,
-                    tint = decoColor,
-                    modifier = Modifier
-                        .size(88.dp)
-                        .align(Alignment.CenterEnd)
-                )
-                // 左上角青色光点
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .align(Alignment.TopEnd)
-                        .padding(top = 14.dp, end = 18.dp)
-                        .background(
-                            if (isDark) Color.White.copy(alpha = 0.35f) else Color(0xFF1565C0).copy(alpha = 0.35f),
-                            RoundedCornerShape(50)
-                        )
-                )
+                // 右上角快捷扫码：点击直进扫码识别页（需求 2026-08-17）
+                IconButton(
+                    onClick = { onNavigate(Routes.BARCODE_SCAN + "?quick=1") },
+                    modifier = Modifier.align(Alignment.TopEnd)
+                ) {
+                    Icon(
+                        // 扫一扫取景框样式（2026-08-18 用户反馈：原二维码图标不像"扫一扫"）
+                        imageVector = Icons.Filled.CenterFocusWeak,
+                        contentDescription = "快捷扫码",
+                        tint = titleColor
+                    )
+                }
+                // 2026-08-18 用户拍板：去掉右侧 WiFi 装饰背景图（与快捷扫码叠加难看）及青色光点
             }
         }
 

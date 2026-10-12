@@ -2,7 +2,7 @@
 
 面向**宽带装维工程师**的 Android 网络工具箱：局域网发现 / 网络诊断 / 抓包分析 / 摄像头管理 / PCDN 检测 / 极客工具 / SOS 求救 / AI 排障助手，支持 root 增强。全部中文界面。
 
-当前版本：**1.6.11**（minSdk 26 / targetSdk 34，包名 `com.installer.toolbox`）
+当前版本：**1.6.19**（minSdk 26 / targetSdk 34，包名 `com.installer.toolbox`）
 
 ## 功能全景
 
@@ -10,13 +10,13 @@
 |---|---|
 | 🆘 SOS 求救 | 一键求救：手电+蜂鸣摩斯循环、含 GPS 坐标与地图链接的求救短信、一键拨号（紧急联系人 1-3 个） |
 | 🌐 局域网发现 | 根级 ARP 扫描 / ping 扫描、mDNS 主机名发现、设备清单持久化（Room）、静默断网（ARP+IPv6 双向欺骗，需 root） |
-| 🩺 网络诊断 | Ping、DNS 查询、端口扫描、路由追踪、网关冲突检测、环路检测、ARP 欺骗检测、弱网检测（丢包/时延/抖动）、IP 计算器、SNMP 面板、Wake-on-LAN |
+| 🩺 网络诊断 | Ping、DNS 查询、端口扫描、路由追踪、网关冲突检测、环路检测、ARP 欺骗检测、弱网检测（丢包/时延/抖动）、**网线测试**（网口链路/速率/错误帧/丢包判定，需 root）、IP 计算器、SNMP 面板、Wake-on-LAN |
 | 📦 抓包分析 | 免 root VpnService 抓包、广播/组播风暴统计告警 |
 | 📷 摄像头管理 | ONVIF 自动发现（WS-Discovery+SOAP）、海康 SADP/ISAPI：改 IP/密码/重启/恢复出厂、跨网段直连 |
-| ⚡ 极客工具 | 内置 nmap 深度扫描（root）、BLE 扫描、条码生成、Wi-Fi 分析/雷达、DFS 信道检查、踢下线 |
+| ⚡ 极客工具 | 内置 nmap 深度扫描（root）、BLE 扫描、条码生成/扫码连 Wi-Fi（二维码一键连接）、**光猫 Web 助手**（WebView 内嵌+AI 读页面）、Wi-Fi 分析/雷达、DFS 信道检查、踢下线 |
 | 📈 PCDN 检测 | 全网 PCDN 设备两阶段检测（9 大特征：上行流量/UDP 占比/IDC 目标/STUN/SSDP/UPnP/DNS 量等）、ARP 中间人流量审计（需 root） |
-| 🤖 AI 排障助手 | DeepSeek 驱动、47 个工具调用闭环、root shell 逐步审批、按会话隔离的长期记忆与档案（.md）、凭据保险库（Keystore 加密+对话打码）、上下文自动压缩与缓存命中统计 |
-| 🕹 远程控制 | 设备前台服务 WS 长连中转服务器，Web 控制台与 App 内置控制台远程驱动 AI；会话/记忆/删除三端实时同步 |
+| 🤖 AI 排障助手 | DeepSeek 驱动、53 个工具调用闭环、root shell 逐步审批、按会话隔离的长期记忆与档案（.md）、凭据保险库（Keystore 加密+对话打码）、上下文自动压缩与缓存命中统计 |
+| 🕹 远程控制 | 设备前台服务 WS 长连中转服务器，Web 控制台与 App 内置控制台远程驱动 AI；会话/记忆/删除三端实时同步；**远程强制升级**（下发即更新+自动重启）、开机自启 |
 
 ## 技术栈
 
@@ -75,7 +75,7 @@ core-common/          Room 数据库（设备清单/诊断报告）
 core-network/         设备发现、诊断、IP 计算器、极客工具、内置工具管理
 core-capture/         VpnService 抓包 + 广播风暴检测
 core-isapi/           ONVIF + 海康 SADP/ISAPI（含 hikvision.aar）
-core-agent/           DeepSeek Agent + 47 工具 + root shell + 记忆/凭据
+core-agent/           DeepSeek Agent + 53 工具 + root shell + 记忆/凭据
 core-router/          路由器品牌适配（已放弃，源码保留）
 native-tools/         自研 C 工具源码（arpspoof/deauth/arpscan/ndpspoof）
 scripts/              发布脚本 + 服务端 PHP + Node 中转

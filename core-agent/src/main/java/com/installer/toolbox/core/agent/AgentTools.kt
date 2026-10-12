@@ -21,6 +21,7 @@ import com.installer.toolbox.core.agent.support.AiNotes
 import com.installer.toolbox.core.agent.support.CredentialVault
 import com.installer.toolbox.core.agent.support.FeedbackApi
 import com.installer.toolbox.core.agent.support.FeedbackHelper
+import com.installer.toolbox.core.agent.support.WebPageBridge
 import com.installer.toolbox.core.network.diagnose.DnsTool
 import com.installer.toolbox.core.network.diagnose.PingTool
 import com.installer.toolbox.core.network.diagnose.PortScanner
@@ -31,6 +32,7 @@ import com.installer.toolbox.core.network.diagnose.WakeOnLan
 import com.installer.toolbox.core.network.diagnose.WeakNetworkDetector
 import com.installer.toolbox.core.network.diagnose.PlatformTarget
 import com.installer.toolbox.core.network.diagnose.resolvePlatform
+import com.installer.toolbox.core.network.cable.CableProbe
 import com.installer.toolbox.core.network.discovery.BarcodeUtils
 import com.installer.toolbox.core.network.discovery.DeviceScanner
 import com.installer.toolbox.core.network.scan.ArpSpoofDetector
@@ -56,6 +58,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -418,6 +421,30 @@ object AgentTools {
             )
         ),
         ToolDef(
+            name = "cable_test",
+            description = "网线测试（需 root，适合带网口的设备如 PDA）：持续采样网口 carrier/协商速率/错误帧，窗口后 ping 对端（网关）统计丢包/延迟/抖动，判定线缆断芯/短芯/短路/接触不良/**质量差丢包**（**表现型推断**：link 不通=线断/严重短路；1000 降到 100M=断芯短芯铁证；错误帧暴涨=短路/干扰；**ping 对端丢包率高=线质量差**；**测不出具体哪对芯/短路位置**）。**前置：用户需先手动开启设备有线网口，且被测线对端必须接通电设备（交换机/路由/光猫）并给网口分配 IP，否则无法协商/无法 ping 测丢包**（工具不自动拉起网口）。iface 不传自动探测 eth*/en* 网口；duration 检测时长秒（5-30，默认 10）。返回各网口判定结论。",
+            parameters = objSchema(
+                "iface" to ("string" to "网口名（如 eth0），不传自动探测有线网口"),
+                "duration" to ("number" to "检测时长秒（5-30，默认 10）")
+            )
+        ),
+        ToolDef(
+            name = "web_page_read",
+            description = "读取当前『光猫 Web 助手』页面内容（**同进程读 WebView 的 DOM**：页面标题/网址/正文纯文本）：用于帮用户分析光猫登录后的设备信息、状态、日志、告警等（绕开光猫登录页加密 JS）。**读取前自动等待页面加载完成**（最多 3 秒；光猫/路由管理页多 JS 异步加载，中途读会数据残缺）；若仍加载中返回 pageState=loading——**此时内容可能不全，AI 应如实提示用户'页面还在加载，请稍等或回到光猫页刷新后重读'，不要基于残缺数据下结论**。**前置**：用户需先在 App 首页『光猫 Web 助手』打开光猫管理地址并手动登录（验证码手动输入一次）；本工具**只读页面内容**，不点击任何按钮（不执行重启/恢复出厂等操作）。",
+            parameters = objSchema()
+        ),
+        ToolDef(
+            name = "web_page_action",
+            description = "操作『光猫 Web 助手』当前页面（**AI 全自动操作页面元素**，配合 web_page_read 实现登录/点菜单/查状态全流程）：action=click_text 按按钮/链接**文本**点击（target=页面显示的文字，如\"登录\"\"状态\"）；click_selector 按 **CSS 选择器**点击（target=选择器）；input 向输入框填内容（target=输入框 CSS 选择器，value=要填的值，登录账号/密码可填）；submit 提交当前表单（target=表单选择器可空）；**js 在页面执行任意 JavaScript**（code=JS 代码，返回最后一个表达式的值——用于读样式/滚动/复杂交互/排查问题，如 `getComputedStyle(document.body).backgroundImage`）。**安全红线（必须先遵守）**：①**点击/执行前先 web_page_read 读一遍页面，确认目标元素确实是用户要点的**，不要凭猜测点；②**禁止点击或通过 JS 触发任何破坏性操作**——含 重启/恢复出厂/恢复默认/重置/清空配置/删除配置/升级固件/格式化 等，一律拒绝，需用户手动操作；③登录验证码需用户手动输入（AI 无法识别图片验证码）；④操作后应 web_page_read 读回确认页面变化。",
+            parameters = objSchema(
+                "action" to ("string" to "操作类型：click_text / click_selector / input / submit / js，必填"),
+                "target" to ("string" to "click_text=要点击的文本；click_selector/input=CSS 选择器（如 #username、input[name=passwd]）；submit 可空"),
+                "value" to ("string" to "input 时要填入的值（登录账密等）"),
+                "code" to ("string" to "action=js 时要执行的 JavaScript 代码"),
+                required = listOf("action")
+            )
+        ),
+        ToolDef(
             name = "subnet_calc",
             description = "计算 IP 子网信息：网络地址/广播地址/可用主机范围/主机数/掩码/通配符/是否私有。参数 prefix_or_mask 为 CIDR 前缀（如 24）或掩码（如 255.255.255.0）。",
             parameters = objSchema(
@@ -578,6 +605,9 @@ object AgentTools {
                 "ssh_send" -> execSshSend(call.arguments)
                 "ssh_close" -> execSshClose(call.arguments)
                 "barcode_generate" -> execBarcodeGenerate(call.arguments)
+                "cable_test" -> execCableTest(call.arguments)
+                "web_page_read" -> execWebPageRead()
+                "web_page_action" -> execWebPageAction(call.arguments)
                 "subnet_calc" -> execSubnetCalc(call.arguments)
                 "silence_device" -> execSilenceDevice(call.arguments, context)
                 "silence_network" -> execSilenceNetwork(context, call.arguments)
@@ -591,6 +621,8 @@ object AgentTools {
                 "route_control" -> execRouteControl(call.arguments)
                 else -> "未知工具：${call.name}"
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e   // 【修复 2026-08-17】保持取消语义：停止按钮取消协程立即传播，不被吞
             } catch (e: Exception) {
                 "执行失败：${e.message ?: e.javaClass.simpleName}"
             }
@@ -599,6 +631,8 @@ object AgentTools {
                 result.startsWith("参数错误") || result.startsWith("未检测到 root")
             postLog(onLog, if (failed) "✖ 工具 ${call.name} 异常（耗时 ${elapsed}s）：${result.take(200)}" else "✔ 工具 ${call.name} 完成（耗时 ${elapsed}s）")
             result
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e   // 【修复 2026-08-17】保持取消语义
         } catch (e: Exception) {
             val msg = "执行失败：${e.message ?: e.javaClass.simpleName}"
             postLog(onLog, "✖ 工具 ${call.name} 异常：$msg")
@@ -1942,6 +1976,158 @@ object AgentTools {
                 }
             )
         }.toString()
+    }
+
+    /**
+     * cable_test：网线测试（需 root）——拉起有线网口 + 采样 carrier/协商速率/错误帧判定断芯短芯短路。
+     * 自动探测 eth、en 前缀网口；对抗设备 3 秒自动关闭网卡（检测窗口内反复拉起）。
+     */
+    private suspend fun execCableTest(args: JSONObject): String {
+        if (!RootShell.isAvailable()) {
+            return errJson("需要 root 权限才能读取网口 carrier/错误帧（本机无 root）")
+        }
+        val duration = args.optInt("duration", 10).coerceIn(5, 30)
+        val ifaceArg = args.optString("iface").trim()
+        val ifaces = if (ifaceArg.isNotEmpty()) listOf(ifaceArg)
+        else CableProbe.findEthernetInterfaces(RootShell::run)
+        if (ifaces.isEmpty()) {
+            return errJson("未发现有线网口（/sys/class/net 下无 eth*/en*），确认设备有网口且网线已插入")
+        }
+        val out = StringBuilder()
+        for (iface in ifaces) {
+            val r = CableProbe.test(iface, RootShell::run, durationSec = duration)
+            out.append("网口 $iface：${r.verdict}\n")
+            r.note?.let { out.append("  提示：$it\n") }
+            out.append(
+                "  link=${r.operstate ?: "?"} / 速率=${r.speedMbps ?: "?"}M / carrier=${r.carrier ?: "?"} / 双工=${r.duplex ?: "?"}\n" +
+                    "  错误帧：窗口 CRC 增量=${r.crcDelta ?: "?"} / 收帧错=${r.rxFrameErrors ?: "?"} / 收错=${r.rxErrors ?: "?"} / 发错=${r.txErrors ?: "?"} / 收丢=${r.rxDropped ?: "?"}\n"
+            )
+        }
+        return JSONObject().put("ok", true).put("result", out.toString()).toString()
+    }
+
+    /**
+     * web_page_read：读取『光猫 Web 助手』当前页面 DOM（同进程，绕开登录加密）。
+     * 只读页面标题/网址/正文文本；页面需先在 App 打开并手动登录（验证码手动输入）。
+     */
+    private suspend fun execWebPageRead(): String {
+        if (!WebPageBridge.isAvailable()) {
+            return errJson("当前没有可读取的『光猫 Web 助手』页面：请先在 App 首页『光猫 Web 助手』打开光猫管理地址（如 192.168.1.1）并登录（验证码手动输入一次），再让 AI 读取")
+        }
+        val raw = WebPageBridge.readDom() ?: return errJson("页面读取失败（可能正在加载或页面已关闭）")
+        return try {
+            // evaluateJavascript 返回的是 JS 字符串字面量（含引号转义），先用 JSONTokener 解一层
+            val decoded = JSONTokener(raw).nextValue() as? String ?: raw
+            val obj = JSONObject(decoded)
+            val text = obj.optString("text")
+            val ready = obj.optString("readyState")
+            JSONObject().put("ok", true)
+                .put("title", obj.optString("title"))
+                .put("url", obj.optString("url"))
+                .put("pageState", if (ready == "complete") "complete" else "loading")   // 页面加载状态
+                .put("pageTextLen", text.length)
+                .put("pageText", text)
+                // 背景诊断（排查背景图不渲染；页面样式信息对 AI 分析也有用）
+                .put("cssLoaded", obj.optBoolean("cssLoaded"))
+                .put("bodyBgImage", obj.optString("bodyBgImage"))
+                .put("bodyBgColor", obj.optString("bodyBgColor"))
+                .put("mainBgImage", obj.optString("mainBgImage"))
+                .toString()
+        } catch (e: Exception) {
+            // 解不开就直接给原始串（至少不吞内容）
+            JSONObject().put("ok", true).put("raw", raw.take(20000)).toString()
+        }
+    }
+
+    /** JS 字符串转义（防注入，org.json 标准 quote） */
+    private fun jsStr(s: String): String = JSONObject.quote(s)
+
+    /** 破坏性操作关键词（硬拦截，防 AI 误点击重启/恢复出厂等；2026-08-18 用户反馈 AI 误点击） */
+    private val DANGEROUS_KEYWORDS = listOf(
+        "重启", "恢复出厂", "恢复默认", "重置", "清空配置", "删除配置", "恢复初始",
+        "升级", "固件", "格式化", "erase", "wipe", "factory", "reboot", "reset", "format"
+    )
+
+    /** 文本是否命中破坏性操作（命中则拒绝点击） */
+    private fun isDangerousText(text: String): Boolean {
+        val t = text.lowercase()
+        return DANGEROUS_KEYWORDS.any { t.contains(it) }
+    }
+
+    /**
+     * 按页面文本点击（按钮/链接/可点元素）。
+     * 2026-08-18 修复：原来模糊匹配会点到**父容器**（父 div/li 的 innerText 含子文本且 DOM 顺序父在前），
+     * 改为——精确匹配优先，匹配候选取 **DOM 最深（叶子）** 元素点击（点真正的目标而非父栏目）；
+     * 无精确匹配才走模糊包含，同样取最深。
+     */
+    private fun clickTextJs(target: String): String =
+        "(function(){var q=${jsStr(target)};var els=document.querySelectorAll('button,a,input[type=submit],input[type=button],[role=button],label,span,li,div,td,th,em,strong');" +
+            "function depth(el){var d=0;while(el.parentNode){d++;el=el.parentNode;}return d;}" +
+            "var exact=null,exactD=-1,fuzzy=null,fuzzyD=-1;" +
+            "for(var i=0;i<els.length;i++){var e=els[i];var t=(e.innerText||e.value||'').trim();if(!t)continue;" +
+            "if(t===q){var d=depth(e);if(d>exactD){exact=e;exactD=d;}}" +
+            "else if(t.indexOf(q)>=0){var d2=depth(e);if(d2>fuzzyD){fuzzy=e;fuzzyD=d2;}}}" +
+            "var pick=exact||fuzzy;" +
+            "if(pick){pick.click();return '已点击 '+(pick.tagName||'?')+'（'+((pick.innerText||pick.value||q).trim().slice(0,30))+'）';}" +
+            "return '未找到文本：'+q;})()"
+
+    /** 按 CSS 选择器点击 */
+    private fun clickSelectorJs(target: String): String =
+        "(function(){var q=${jsStr(target)};var e=document.querySelector(q);if(e){e.click();return '已点击 '+e.tagName;};return '未找到选择器：'+q;})()"
+
+    /** 向输入框填值（触发 input/change 事件，兼容框架表单校验） */
+    private fun inputJs(target: String, value: String): String =
+        "(function(){var q=${jsStr(target)};var v=${jsStr(value)};var e=document.querySelector(q);if(e){e.focus();e.value=v;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return '已填入（'+q+'）';};return '未找到输入框：'+q;})()"
+
+    /** 提交表单（target 可空=第一个 form） */
+    private fun submitJs(target: String): String {
+        val sel = if (target.isBlank()) "form" else target
+        return "(function(){var q=${jsStr(sel)};var f=document.querySelector(q);if(f){if(f.requestSubmit)f.requestSubmit();else f.submit();return '已提交表单';};return '未找到表单：'+q;})()"
+    }
+
+    /**
+     * web_page_action：AI 全自动操作『光猫 Web 助手』页面（点击/输入/提交）。
+     * 破坏性操作（重启/恢复出厂）由 AI 先征得用户同意（工具描述约束 + 提示词）。
+     */
+    private suspend fun execWebPageAction(args: JSONObject): String {
+        if (!WebPageBridge.isAvailable()) {
+            return errJson("没有可操作的『光猫 Web 助手』页面：请先在 App 首页『光猫 Web 助手』打开光猫管理地址并停留")
+        }
+        val action = args.optString("action")
+        val target = args.optString("target").trim()
+        val value = args.optString("value")
+        // 硬拦截：任何操作目标命中破坏性关键词一律拒绝（防 AI 误点击，需用户手动操作）
+        if (action != "input" && target.isNotEmpty() && isDangerousText(target)) {
+            return errJson("已拦截危险操作：目标「$target」疑似重启/恢复出厂/升级等破坏性操作，AI 不执行此类点击，请用户手动在页面操作")
+        }
+        val js = when (action) {
+            "click_text" -> {
+                if (target.isEmpty()) return errJson("click_text 需要 target（页面上的按钮/链接文本）")
+                clickTextJs(target)
+            }
+            "click_selector" -> {
+                if (target.isEmpty()) return errJson("click_selector 需要 target（CSS 选择器）")
+                clickSelectorJs(target)
+            }
+            "input" -> {
+                if (target.isEmpty()) return errJson("input 需要 target（输入框 CSS 选择器）")
+                inputJs(target, value)
+            }
+            "submit" -> submitJs(target)
+            "js" -> {
+                val code = args.optString("code")
+                if (code.isBlank()) return errJson("js 需要 code（要执行的 JavaScript 代码）")
+                code
+            }
+            else -> return errJson("action 仅支持 click_text / click_selector / input / submit / js")
+        }
+        val raw = WebPageBridge.executeJs(js) ?: return errJson("页面不可执行（可能已关闭或正在加载）")
+        return try {
+            val decoded = JSONTokener(raw).nextValue() as? String ?: raw
+            JSONObject().put("ok", true).put("result", decoded).toString()
+        } catch (e: Exception) {
+            JSONObject().put("ok", true).put("result", raw).toString()
+        }
     }
 
     /** detect_gateway_conflict：网关/IP 冲突检测（多网关 + 一 MAC 多 IP，独立于 ARP 欺骗检测；60 秒外层超时兜底） */

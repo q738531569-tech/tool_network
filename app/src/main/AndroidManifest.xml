@@ -7,10 +7,18 @@
     <!-- 网络探测与诊断 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 远程升级安装后精确闹钟拉起新版本（USE_EXACT_ALARM 免用户授权；2026-08-18） -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- 开机自启：手机重启后按远程开关自动拉起远程控制服务，保证设备常驻在线（2026-08-19） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 扫 WiFi 二维码连接：WifiNetworkSpecifier/requestNetwork 需要（normal 权限） -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <!-- 审计/检测期间防止 CPU 休眠中断抓包（normal 权限，无需运行时申请） -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- 扫 WiFi 二维码自动连接：Android 13+ 免 root 走 WifiNetworkSpecifier 需此运行时权限（声明不用来定位） -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
     <!-- Wi-Fi 扫描（Android 9+ 硬性要求） -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -86,6 +94,25 @@
             android:name=".remote.RemoteControlService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- 远程升级安装完成后自动重启（MY_PACKAGE_REPLACED：App 被覆盖安装后系统拉起；2026-08-18） -->
+        <receiver
+            android:name=".remote.UpdateRestartReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 开机自启：手机重启后按远程开关 enabled 自动拉起 RemoteControlService（2026-08-19） -->
+        <receiver
+            android:name=".remote.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <!-- OTA 更新：非 root 安装 APK 时经 FileProvider 分享给系统安装器
              （仅暴露 cacheDir/update.apk，路径映射见 res/xml/file_paths.xml） -->

@@ -57,6 +57,8 @@ import com.installer.toolbox.ui.screens.remote.RemoteControlScreen
 import com.installer.toolbox.ui.screens.settings.SettingsScreen
 import com.installer.toolbox.ui.screens.tools.ArpDetectScreen
 import com.installer.toolbox.ui.screens.tools.BarcodeScreen
+import com.installer.toolbox.ui.screens.tools.CableTestScreen
+import com.installer.toolbox.ui.screens.tools.ModemWebScreen
 import com.installer.toolbox.ui.screens.tools.BleScanScreen
 import com.installer.toolbox.ui.screens.settings.DiagnosticInfoScreen
 import com.installer.toolbox.ui.screens.settings.FeedbackScreen
@@ -234,10 +236,21 @@ fun MainScreen() {
             composable(Routes.LOOP_DETECT) { LoopDetectScreen() }
             composable(Routes.SILENCE) { SilenceScreen() }
             composable(Routes.BARCODE_SCAN) { BarcodeScreen(initialTab = 0) }
+            // 首页右上角快捷扫码：barcode_scan?quick=1 直进扫码识别页
+            composable(
+                route = Routes.BARCODE_SCAN + "?quick={quick}",
+                arguments = listOf(androidx.navigation.navArgument("quick") { defaultValue = "0" })
+            ) { entry ->
+                BarcodeScreen(
+                    initialTab = if (entry.arguments?.getString("quick") == "1") 2 else 0
+                )
+            }
             composable(Routes.REMOTE_SHELL) { RemoteShellScreen() }
             composable(Routes.REMOTE_CONTROL) { RemoteControlScreen() }
             composable(Routes.WEAK_NETWORK) { WeakNetworkScreen() }
             composable(Routes.SNMP) { SnmpScreen() }
+            composable(Routes.CABLE_TEST) { CableTestScreen(onBack = { navController.popBackStack() }) }
+            composable(Routes.MODEM_WEB) { ModemWebScreen(onBack = { navController.popBackStack() }) }
             composable(Routes.WAKE_ON_LAN) { WakeOnLanScreen() }
             // ---- 设置页二级页（反馈与诊断信息）----
             composable(Routes.FEEDBACK) { FeedbackScreen() }

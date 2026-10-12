@@ -118,7 +118,13 @@ object WifiRadar {
                     object : RangingResultCallback() {
                         override fun onRangingResults(results: List<RangingResult>) {
                             val r = results.firstOrNull { it.status == RangingResult.STATUS_SUCCESS }
-                            cont.resume(r?.let { it.distanceMm / 1000f })
+                            // 【修复 2026-08-18 用户反馈"测距显示 10 万米"】RTT 失败/不支持时部分设备返回
+                            // 异常超大距离（如 100000000mm）却标 STATUS_SUCCESS——按物理合理性过滤：
+                            // 802.11mc 有效距离 0.1~300 米，超出视为无效返回 null（UI 退回 RSSI 估算）
+                            cont.resume(r?.let {
+                                val meters = it.distanceMm / 1000f
+                                if (meters in 0.1f..300f) meters else null
+                            })
                         }
 
                         override fun onRangingFailure(code: Int) {

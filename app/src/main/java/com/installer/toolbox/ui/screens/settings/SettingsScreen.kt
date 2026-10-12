@@ -68,6 +68,7 @@ import com.installer.toolbox.ota.ApkUpdater
 import com.installer.toolbox.ota.DEFAULT_UPDATE_URL
 import com.installer.toolbox.ota.UpdateChecker
 import com.installer.toolbox.ota.UpdateInfo
+import com.installer.toolbox.remote.OemKeepAliveGuide
 import com.installer.toolbox.remote.RemoteControlService
 import com.installer.toolbox.ui.navigation.Routes
 import java.util.Locale
@@ -99,6 +100,8 @@ fun SettingsScreen(
     val context = LocalContext.current
     // 进设置页时拉取 API 可用模型列表（选项动态化；无 Key 或失败时下拉用兜底选项）
     LaunchedEffect(Unit) { viewModel.refreshModels() }
+    // 【需求 2026-08-17】每次进入设置页刷新账户余额（API Key 旁显示）
+    LaunchedEffect(Unit) { viewModel.refreshBalance() }
     // 关于区版本号动态读取（与 build.gradle versionName 保持一致，避免写死过期）
     val aboutVersion = remember {
         runCatching {
@@ -266,6 +269,16 @@ fun SettingsScreen(
                 MaterialTheme.colorScheme.outline
             }
         )
+        // 账户余额（每次进入设置页刷新；未配 Key/查询失败不显示）
+        val balance by viewModel.balance.collectAsState()
+        if (balance != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "💰 账户余额：$balance",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
@@ -626,7 +639,7 @@ private fun RemoteControlCard() {
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "远程排查：开启后本机常驻连接服务器，可在电脑/手机浏览器远程操控本机 AI 助手排查网络（远程对话两端实时同步，root 命令审批在控制端，ARP 类命令免审批）。",
+                        text = "远程排查：开启后本机常驻连接服务器，可在电脑/手机浏览器远程操控本机 AI 助手排查网络（远程对话两端实时同步；本机发起的 root 命令在本机确认，控制端发起的在控制端确认，ARP 类命令免审批）。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -685,6 +698,19 @@ private fun RemoteControlCard() {
                     color = if (batteryIgnored.value) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                     modifier = Modifier
                         .clickable { promptBatteryOptimization(context) }
+                        .padding(vertical = 2.dp)
+                )
+            }
+            // 各厂商 ROM 后台常驻引导（自启动管理/后台清理拦截，2026-08-19）：按机型显示放行步骤
+            val oemName = remember { OemKeepAliveGuide.detectOem() }
+            if (enabled && oemName != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "🔒 常驻引导（$oemName）：${OemKeepAliveGuide.guideText(oemName)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier
+                        .clickable { OemKeepAliveGuide.openSettings(context) }
                         .padding(vertical = 2.dp)
                 )
             }
@@ -765,6 +791,8 @@ private val USAGE_SECTIONS: List<UsageSection> = listOf(
             "· 弱网检测：持续测网络稳不稳（丢包/时延/抖动），定位断流卡顿根因；有 root 用真 ICMP ping 更准，无 root 自动回退端口探测（支持一键测抖音/微信/B站/淘宝等 10 个主流平台的网络质量）\n" +
             "· SNMP 面板：查路由器/交换机/打印机等支持 SNMP 的设备信息（名称/系统描述/运行时长/位置/联系人），装维识别设备用；需设备开 SNMP 服务（community 默认 public），无需 root\n" +
             "· 局域网唤醒：输入电脑 MAC 发魔术包远程开机（需电脑 BIOS/系统开启网络唤醒，无需 root）\n" +
+            "· 网线测试：网线插设备网口直测线缆质量——断芯/短芯/短路/接触不良/丢包严重一眼看出（需 root+有线网口；网口请先手动开启，被测线对端必须接通电设备如交换机/光猫；测不出具体哪对芯/短路位置，那要万用表/线缆仪）\n" +
+            "· 光猫 Web 助手：内嵌浏览器打开光猫管理页（默认自动填当前网络网关，参数区可收起），登录后问 AI『读取光猫页面』可帮你分析设备信息/日志；验证码需手动输入，AI 只读不点危险按钮\n" +
             "· 静默模式：让偷跑流量的设备静默（断网不断 Wi-Fi）或踢下线（仅无线设备），测速更准；支持 标准/洪泛/信道阻塞 三档，对顽固设备可升级强度（信道阻塞会影响同网段其他设备，谨慎使用）；IPv6 网络自动叠加 NDP 欺骗双重断网（需 root+授权，责任自负）\n" +
             "· 摄像头管理：ONVIF/海康摄像头发现与维护\n" +
             "· AI 助手：DeepSeek 智能对话，自动调用工具排查网络问题\n" +
@@ -1129,6 +1157,13 @@ private data class VersionLog(val version: String, val date: String, val desc: S
 
 /** 更新记录（按版本从新到旧；项目 2026-08-11 起快速迭代，日期均为发布日） */
 private val UPDATE_LOG: List<VersionLog> = listOf(
+    VersionLog("1.6.19", "2026-08-18", "①**远程强制升级**：Web 控制台/内置控制台选中设备点「升级」，自动检查更新→下载→静默安装→重启应用，全程可见进度（设备执行任务中会拒绝，避免打断）②光猫 Web 助手**自动切换网关**：换网络后打开自动加载新网关管理页，不再停留旧页面 ③AI 读光猫页面**等加载完成**：页面没加载完会提示「还在加载请稍后重读」，不再拿残缺数据误分析 ④Wi-Fi 雷达**测距修复**：不再显示离谱的十万米，异常自动退回信号强弱估算"),
+    VersionLog("1.6.17", "2026-08-18", "攒积大版本：①**停止按钮实时生效**——AI 干活时按停止立即中断（之前要等当前步骤跑完）②**设置页显示账户余额**——API Key 旁直接看还剩多少钱，进页自动刷新 ③**首页右上角快捷扫码**——扫一扫图标一键进扫码识别 ④**网线测试**——网线插设备网口直测线缆质量：断芯/短芯/短路/接触不良/**丢包严重**一眼看出（需 root+有线网口，被测线对端要接通电设备；测不出具体哪对芯/短路位置，那要万用表）⑤**光猫 Web 助手**——内嵌浏览器打开光猫管理页（默认自动填当前网关，参数区可收起），AI 可**读取页面内容**帮你分析、也可**点击页面元素**（登录/翻页/查状态全自动，重启/恢复出厂等危险操作 AI 不做），切到 AI 助手网页继续后台运行不中断，换光猫可一键清除缓存 ⑥**AI 回复不再莫名截断**——多工具排查后网络波动导致的中断会明确提示『可让我继续』；AI 工具调用**不再限制 8 轮**，复杂排查一路查到出结论（死循环按停止即可）⑦远程会话历史不再截断（长思考/长回复完整显示）⑧AI 工具增至 54 个（网线测试/读网页/操作网页/执行 JS）"),
+    VersionLog("1.6.16", "2026-08-17", "修复：网络波动重连后，正在进行的对话轮次不再消失——补发审批后如果消息没显示，会自动重新拉取会话历史恢复完整对话（之前需要手动断开重新绑定设备才能看到）"),
+    VersionLog("1.6.15", "2026-08-17", "远程控制网络波动加固（微信式送达确认）：①App 内置远程控制台与 Web 控制页一样，断线期间的操作（发消息/切会话/停止/审批等）自动暂存，重连后自动补发，不再悄悄丢失 ②审批请求断线丢失后，重连会自动向设备拉回未决审批并重新弹窗——不会出现『点了审批但设备还在等』 ③服务端新增送达确认：消息/审批发给设备成功有回执，失败会明确提示原因（如『设备离线』）④重连后设备正在执行任务会有提示（可能等待 root 审批）"),
+    VersionLog("1.6.14", "2026-08-17", "远程控制断线重连优化（网络波动不再影响体验）：①设备 AI 正在干活时，控制端重连也能正常加载当前会话历史（之前会被『正在执行任务』挡住，消息区空白/不刷新）②控制页新增设备掉线/上线实时提示（谁掉了、谁回来了一眼可见，带防抖不刷屏）③控制页重连成功有『已恢复』提示，设备列表显示『执行中』状态④重连后自动拉取最新消息，不再需要手动刷新"),
+    VersionLog("1.6.13", "2026-08-17", "修复 root 命令审批路由：远程控制开着时，本机（PDA 屏）发起的 root 命令现在直接在本机弹窗确认，不再发到远程控制端等审批——装维现场直接操作 PDA 排查时不会被远端卡住（控制端发起的 root 命令仍在控制端确认）"),
+    VersionLog("1.6.12", "2026-08-17", "扫码连 WiFi（新功能）：①扫别的设备分享的 WiFi 二维码（手机分享/路由器管理页/贴纸上的码）一键连网，装维到客户家不用再手输密码 ②支持摄像头实时扫，也支持从相册选 WiFi 二维码图片识别 ③有 root 的设备静默直连（不弹系统确认），无 root 设备走系统连接确认（Android 13+ 会自动申请『附近设备』权限）④『二维码/条码功能』入口说明已更新"),
     VersionLog("1.6.11", "2026-08-17", "AI 对话体验大升级：①思考过程与回复正文全部逐行实时打印（打字机效果，不再整段蹦出）②修复多工具长任务回复被腰斩——工具轮数达到上限后自动追加总结轮，AI 会把结论说完整（不再停在半句话）③思考过程先展示、正式回答出来后才自动收起（可随时点开回看）④正式回答与上方的思考/工具记录隔开一点，层次更清楚"),
     VersionLog("1.6.10", "2026-08-17", "AI 助手全面对标优化：①长对话自动控制上下文——超过一半（约 50 万 token）自动把更早历史压缩成摘要，接近上限（约 80 万）只保留最近几轮，超限报错还会自动降级重试一次，聊再久也不怕②修复：AI 调用工具前说的话现在实时显示（之前被吞掉，只能干等工具）③修复：思考强度选『关』时报错的问题④回复太长自动提示『可继续补充』（之前截断无提示）⑤新增 SSH 交互工具：ssh_open/ssh_send/ssh_close 三步式连设备执行命令，交互式设备（要分步输命令的）也能用 AI 排查⑥远程控制：App 重启自动续连服务器（放客户现场不用管，开机就挂上）⑦设置页可调：单次回复最大长度（默认 256000，官方上限 384K）、思考强度四档（关/低/高/最高）⑧读超时 300 秒 + 失败自动重试，慢任务不再半路报错"),
     VersionLog("1.6.9", "2026-08-16", "远程控制体验优化：①取消设备所有者授权勾选（三端全部移除，AI 不再向你申请授权，直接干活）②控制端新增 root 命令审批三档：每步审批（默认）/会话允许（本会话自动放行）/关闭（自动拒绝），点对话区顶部按钮切换；ARP 类命令（arpspoof/arping）免审批直接执行 ③锁屏不再卡任务：AI 执行期间保持全速运行（防休眠锁），平时正常休眠省电 ④网络差不怕断：断线自动重连（5-60 秒退避）、断网瞬间的 AI 过程与结果不丢（断线帧缓存补发）、长时间无响应自动判断——AI 长任务静默执行不误报，只有设备真离线才提示 ⑤三端聊天实时同步：PDA 屏上聊，网页/App 控制台实时看到全过程（思考/工具/结果）；控制台聊，PDA 屏上也实时显示，任意一端可停止 ⑥AI 提示词全面精简：删掉申请授权、界面操作等啰嗦话，root 命令审批一句话带过"),

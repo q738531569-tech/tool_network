@@ -235,6 +235,16 @@ class RemoteControlViewModel : ViewModel() {
     /** 绑定/删除当前会话后自动加载新当前会话历史 */
     private var autoLoadHistory = false
 
+    /** 断线期间暂存的操作帧（网络波动防丢帧，绑定恢复后 flushPendingFrames 补发） */
+    private val pendingFrames = java.util.concurrent.ConcurrentLinkedQueue<JSONObject>()
+
+    /** 断线暂存提示防抖时间戳 */
+    @Volatile
+    private var lastFrameWarnTs = 0L
+
+    /** ai_done 兜底重拉历史的防抖时间戳（重连竞态下当前轮消息被历史渲染清掉时用） */
+    private var lastHistoryReloadTs = 0L
+
     /** 本次 session_switch 是否为「加载更早」分页请求 */
     private var loadMoreMode = false
 
@@ -289,7 +299,7 @@ class RemoteControlViewModel : ViewModel() {
         resetSessions()
         autoLoadHistory = true // 绑定成功后拉列表并自动加载当前会话历史
         phase = RemotePhase.CONSOLE
-        send(JSONObject().put("t", "bind").put("deviceId", deviceId))
+        send(JSONObject().put("t", "bind").put("deviceId", deviceId), queueOnFail = false)
     }
 
     /** 断开绑定：本地清绑定、回设备列表（v1 无解绑协议，服务器端绑定残留无害） */
@@ -357,6 +367,31 @@ class RemoteControlViewModel : ViewModel() {
     fun stopRound() {
         send(JSONObject().put("t", "stop"))
         appendSys("已发送停止指令…")
+    }
+
+    /** 远程强制升级（2026-08-18）：控制端触发设备检查更新+下载+root 静默安装+重启应用 */
+    fun sendUpgrade() {
+        if (boundDeviceId == null) {
+            notice = "未绑定设备"
+            return
+        }
+        notice = "已下发升级指令，等待设备响应…"
+        send(JSONObject().put("t", "app_update").put("action", "check_and_install"))
+    }
+
+    /** 升级回执：ok=false 显示原因；ok=true 显示进度（下载中/安装中/完成） */
+    private fun handleAppUpdateResp(m: JSONObject) {
+        val ok = m.optBoolean("ok")
+        val reason = m.optString("reason")
+        val phase = m.optString("phase")
+        val version = m.optString("version")
+        notice = when {
+            !ok -> "升级失败：$reason"
+            phase == "downloading" -> "正在下载 $version …"
+            phase == "installing" -> "正在安装 $version，设备将重启…"
+            phase == "done" -> "升级完成 $version：$reason"
+            else -> "升级响应：${if (reason.isNotBlank()) reason else "进行中"}"
+        }
     }
 
     // ==================== 单轮删除 ====================
@@ -497,9 +532,38 @@ class RemoteControlViewModel : ViewModel() {
         webSocket = okClient.newWebSocket(request, listener)
     }
 
-    /** 发送一帧 JSON（socket 未连接时静默忽略） */
-    private fun send(json: JSONObject) {
-        webSocket?.send(json.toString())
+    /**
+     * 发送一帧 JSON。连接正常直接发；断线（网络波动）时操作帧入队暂存，重连绑定后 flushPendingFrames 补发。
+     * @param queueOnFail 发送失败/断线时是否入队暂存；连接生命周期帧（login/bind/session_list/pong）
+     *                   传 false——它们由重连流程自己重发，暂存反而错乱
+     */
+    private fun send(json: JSONObject, queueOnFail: Boolean = true) {
+        val sock = webSocket
+        if (sock != null) {
+            try {
+                if (sock.send(json.toString())) return
+            } catch (e: Exception) { /* 连接关闭中/异常 → 落入暂存分支 */ }
+        }
+        if (queueOnFail) {
+            pendingFrames.add(json)
+            val now = System.currentTimeMillis()
+            if (now - lastFrameWarnTs > 4000) {   // 防抖：4 秒内只提示一次
+                lastFrameWarnTs = now
+                appendSys("⚠ 网络已断开，操作已暂存，重连后自动补发")
+            }
+        }
+    }
+
+    /** 重连绑定成功后补发断线期间暂存的操作帧（按序；设备 busy 会拒 chat 等，属正常保护） */
+    private fun flushPendingFrames() {
+        if (pendingFrames.isEmpty() || boundDeviceId == null) return
+        val sock = webSocket ?: return
+        val frames = ArrayList<JSONObject>()
+        while (true) { val f = pendingFrames.poll() ?: break; frames.add(f) }
+        if (frames.isNotEmpty()) {
+            frames.forEach { runCatching { sock.send(it.toString()) } }
+            appendSys("已补发断线期间暂存的 ${frames.size} 个操作")
+        }
     }
 
     /** 关旧连接（重新登录/注册前调用，避免连接叠加）；旧连接 onClosed 因引用已换被忽略 */
@@ -551,7 +615,7 @@ class RemoteControlViewModel : ViewModel() {
                 } else {
                     JSONObject().put("t", "login").put("name", account).put("pwd", password)
                 }
-                send(frame)
+                send(frame, queueOnFail = false)
             }
         }
 
@@ -628,8 +692,15 @@ class RemoteControlViewModel : ViewModel() {
             "session_switched" -> handleSwitched(m)
             "session_err" -> handleSessionErr(m)
             "memory_list_resp" -> handleMemoryListResp(m)
+            "ack" -> {
+                // 服务端送达确认（chat/approve）：失败才提示（成功静默，避免刷屏）
+                if (!m.optBoolean("ok") && boundDeviceId != null) {
+                    appendSys("⚠ 操作未送达设备：" + m.optString("reason", "未知原因"))
+                }
+            }
             "round_deleted" -> { /* 本地已乐观删除，忽略即可（设备端会随新 session_list_resp 更新 count） */ }
-            "ping" -> send(JSONObject().put("t", "pong")) // 服务器心跳探测（控制端一般收不到，兜底）
+            "app_update_resp" -> handleAppUpdateResp(m)
+            "ping" -> send(JSONObject().put("t", "pong"), queueOnFail = false) // 服务器心跳探测（控制端一般收不到，兜底）
         }
     }
 
@@ -642,12 +713,14 @@ class RemoteControlViewModel : ViewModel() {
         if (firstLogin) loggedIn = true
         devices = parseDevices(m.optJSONArray("devices"))
 
-        // 绑定设备离线→恢复：自动重绑（现场断网恢复后免手动点连接）
+        // 绑定设备离线→恢复：自动重绑（现场断网恢复后免手动点连接）；
+        // 不依赖 deviceOffline 标志——控制端自己断线错过 offline 帧时该标志未置位，按状态变化判定更稳
         val newMap = mutableMapOf<String, Boolean>()
         devices.forEach { d ->
-            if (d.online && devOnlineMap[d.deviceId] == false && boundDeviceId == d.deviceId && deviceOffline) {
+            if (d.online && devOnlineMap[d.deviceId] == false && boundDeviceId == d.deviceId) {
                 deviceOffline = false
-                send(JSONObject().put("t", "bind").put("deviceId", d.deviceId))
+                autoLoadHistory = true   // 【修复】重连恢复后自动切当前会话拉取消息历史（否则消息不同步）
+                send(JSONObject().put("t", "bind").put("deviceId", d.deviceId), queueOnFail = false)
                 appendSys("设备已恢复，重新连接中…")
             }
             newMap[d.deviceId] = d.online
@@ -658,7 +731,8 @@ class RemoteControlViewModel : ViewModel() {
             phase = RemotePhase.DEVICE_LIST
         } else if (wasReconnecting && boundDeviceId != null) {
             // 断线重连成功：补发 bind + session_list（历史不清）
-            send(JSONObject().put("t", "bind").put("deviceId", boundDeviceId))
+            autoLoadHistory = true   // 【修复】控制端重连后也拉取当前会话最新历史（设备端期间可能有新消息）
+            send(JSONObject().put("t", "bind").put("deviceId", boundDeviceId), queueOnFail = false)
             if (phase == RemotePhase.CONSOLE) {
                 appendSys("连接已恢复，正在重新绑定设备…")
                 requestSessionList()
@@ -666,11 +740,16 @@ class RemoteControlViewModel : ViewModel() {
         }
     }
 
-    /** 绑定成功：拉会话列表（与设备共用同一份 chat_sessions） */
+    /** 绑定成功：拉会话列表；补发断线期间暂存的操作帧；请求设备重发未决审批（断线丢 approval_req 的恢复） */
     private fun handleBound(m: JSONObject) {
         boundDeviceId = m.optString("deviceId")
         deviceOffline = false
         requestSessionList()
+        flushPendingFrames()
+        send(JSONObject().put("t", "pending_approval_query"), queueOnFail = false)
+        // 重连后设备正在执行任务（可能等待 root 审批）：提示用户留意
+        val dev = devices.firstOrNull { it.deviceId == boundDeviceId }
+        if (dev?.busy == true) notice = "设备正在执行任务（可能等待 root 审批），请留意"
     }
 
     /** 绑定被拒（设备不属于该账号/未绑定账号）：清绑定、回列表、提示原因 */
@@ -821,22 +900,34 @@ class RemoteControlViewModel : ViewModel() {
         val userTs = m.optLong("userTs") // 该轮 user 消息落盘 ts（新发轮在 ai_done 后才拿到）
         // 直接定位流式中的 assistant（done=false），同时补 roundTs；其前一条 user 同轮
         val asstIdx = messages.indexOfLast { it.role == "assistant" && !it.done }
-        if (asstIdx >= 0) {
-            val (finalText, isError) = when {
-                error == "stopped" ->
-                    (if (text.isNotBlank()) "$text\n\n⏹ 已手动停止" else "⏹ 已手动停止") to false
-                error.isNotBlank() ->
-                    (if (text.isNotBlank()) "$text\n\n❌ $error" else "❌ $error") to true
-                else -> text to false
+        if (asstIdx < 0) {
+            // 【修复 2026-08-17】重连竞态：重连后 autoLoadHistory 的 renderHistory 清空了消息区，
+            // 而进行中的轮次未落盘不在历史里，ai_done 找不到归属消息 → 静默丢弃导致"当前轮对话消失"
+            // （断开重绑后历史已落盘才显示）。兜底：重拉当前会话历史（该轮此时已落盘），恢复完整消息
+            val sid = currentSessionId
+            if (sid != null && System.currentTimeMillis() - lastHistoryReloadTs > 1500) {
+                lastHistoryReloadTs = System.currentTimeMillis()
+                send(JSONObject().put("t", "session_switch").put("id", sid))
             }
-            messages[asstIdx] = messages[asstIdx].copy(
-                text = finalText, roundSec = roundSec, done = true,
-                error = isError, statusText = "", roundTs = userTs
-            )
-            // 该轮 user 消息补 roundTs（同一轮）
-            if (userTs > 0 && asstIdx > 0 && messages[asstIdx - 1].role == "user") {
-                messages[asstIdx - 1] = messages[asstIdx - 1].copy(roundTs = userTs)
-            }
+            busy = false
+            clearWatchdog()
+            if (memoryOpen) requestMemoryList()
+            return
+        }
+        val (finalText, isError) = when {
+            error == "stopped" ->
+                (if (text.isNotBlank()) "$text\n\n⏹ 已手动停止" else "⏹ 已手动停止") to false
+            error.isNotBlank() ->
+                (if (text.isNotBlank()) "$text\n\n❌ $error" else "❌ $error") to true
+            else -> text to false
+        }
+        messages[asstIdx] = messages[asstIdx].copy(
+            text = finalText, roundSec = roundSec, done = true,
+            error = isError, statusText = "", roundTs = userTs
+        )
+        // 该轮 user 消息补 roundTs（同一轮）
+        if (userTs > 0 && asstIdx > 0 && messages[asstIdx - 1].role == "user") {
+            messages[asstIdx - 1] = messages[asstIdx - 1].copy(roundTs = userTs)
         }
         busy = false
         clearWatchdog() // 本轮结束：取消看门狗
@@ -848,9 +939,26 @@ class RemoteControlViewModel : ViewModel() {
 
     /** 收到审批请求：已有挂起审批则先自动拒绝旧的（v1 单弹窗），再展示新的 */
     private fun handleApproval(m: JSONObject) {
+        val reqId = m.optString("reqId")
+        // 【修复 2026-08-17】档位自动应答与 Web 对齐（此前内置档位切换是摆设、永远弹窗）：
+        // 关闭=自动拒绝；会话允许=自动放行（醒目提示）；每步审批（默认）=弹窗
+        when (shellLevel) {
+            "off" -> {
+                respondApprovalInternal(reqId, false, silent = false)
+                appendSys("🛡 root 审批：关闭，已自动拒绝")
+                return
+            }
+            "session" -> {
+                respondApprovalInternal(reqId, true, silent = true)
+                appendSys("🛡 root 审批：会话允许，已自动放行")
+                // 【安全可见性】自动放行也醒目提示（避免"审批被悄悄绕过"的观感）
+                notice = "⚠ 已按「会话允许」自动放行 root 命令：" + m.optString("command").take(50)
+                return
+            }
+        }
         pendingApproval?.let { respondApprovalInternal(it.reqId, false, silent = true) }
         pendingApproval = RemoteApproval(
-            reqId = m.optString("reqId"),
+            reqId = reqId,
             toolName = m.optString("toolName"),
             command = m.optString("command"),
             deadline = System.currentTimeMillis() + APPROVAL_TIMEOUT_MS
@@ -860,7 +968,29 @@ class RemoteControlViewModel : ViewModel() {
     /** 发送审批结果；silent=true 表示超时自动拒绝。结果标记追加到当前轮最后一个工具卡输出后面
      *  （用户拍板："已允许执行"跟在工具调用文字后面，不单独发系统气泡） */
     private fun respondApprovalInternal(reqId: String, allow: Boolean, silent: Boolean) {
-        send(JSONObject().put("t", "approve").put("reqId", reqId).put("allow", allow))
+        // 【修复 2026-08-17】断线（网络切换瞬间）审批送达可靠性：WS 未连接时 approve 帧会丢，
+        // 设备端收不到审批会一直挂起（120s 超时才拒绝，期间 busy 卡住会话）→ 暂存，重连后由
+        // flushPendingFrames 补发（设备端 reqId 120s 内仍有效，超时后补发为无害 no-op）
+        val sock = webSocket
+        val connected = sock != null &&
+            runCatching { sock.send(JSONObject().put("t", "approve").put("reqId", reqId).put("allow", allow).toString()) }
+                .getOrDefault(false)
+        if (!connected) {
+            send(JSONObject().put("t", "approve").put("reqId", reqId).put("allow", allow))
+            if (pendingApproval?.reqId == reqId) pendingApproval = null
+            val mark = "⏳ 网络已断开，审批已暂存，重连后自动送达"
+            val asstIdx = messages.indexOfLast { it.role == "assistant" && !it.done }
+            if (asstIdx >= 0 && messages[asstIdx].toolCards.isNotEmpty()) {
+                val msg = messages[asstIdx]
+                val cards = msg.toolCards.toMutableList()
+                val last = cards.last()
+                cards[cards.size - 1] = last.copy(output = last.output + "\n" + mark)
+                messages[asstIdx] = msg.copy(toolCards = cards)
+            } else if (!silent) {
+                appendSys(mark)
+            }
+            return
+        }
         if (pendingApproval?.reqId == reqId) pendingApproval = null
         val mark = when {
             allow -> "✔ 已允许执行"
@@ -939,7 +1069,7 @@ class RemoteControlViewModel : ViewModel() {
 
     /** 请求设备下发会话列表（{t:"session_list"}） */
     private fun requestSessionList() {
-        if (boundDeviceId != null) send(JSONObject().put("t", "session_list"))
+        if (boundDeviceId != null) send(JSONObject().put("t", "session_list"), queueOnFail = false)
     }
 
     /** 重置本地会话选择状态（换设备/断开绑定/被顶掉时） */

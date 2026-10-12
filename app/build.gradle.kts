@@ -21,9 +21,10 @@ android {
         applicationId = "com.installer.toolbox"
         minSdk = 26
         targetSdk = 34
-        // 1.6.11（versionCode 35）：AI 流式逐行打印（思考/正文）+ 工具轮数上限收尾请求（不再半截话）+ 思考折叠时机（正式输出后才折）+ 三端正文与思考/工具块间距
-        versionCode = 35
-        versionName = "1.6.11"
+        // 1.6.19（versionCode 43）：1.6.17 追加功能正式发版——远程强制升级（服务器强制设备更新+自动重启）/光猫网关自动切换/web_page_read 等待加载（防 AI 误读）/Wi-Fi 雷达 RTT 距离过滤
+        // 2026-08-19 修复：远程升级后自动拉起（UpdateRestartReceiver 直接拉前台服务，MY_PACKAGE_REPLACED 豁免 FGS 限制）+ 开机自启 BootReceiver
+        versionCode = 43
+        versionName = "1.6.19"
     }
 
     signingConfigs {

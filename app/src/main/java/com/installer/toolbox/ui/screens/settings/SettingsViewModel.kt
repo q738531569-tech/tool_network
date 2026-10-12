@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import com.installer.toolbox.core.agent.DeepSeekClient
 import com.installer.toolbox.util.SecurePrefs
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +40,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _modelsLoading = MutableStateFlow(false)
     val modelsLoading: StateFlow<Boolean> = _modelsLoading.asStateFlow()
 
+    /** DeepSeek 账户余额（设置页 API Key 旁显示；每次进入设置页刷新，复用 AI 页同款查询） */
+    private val _balance = MutableStateFlow<String?>(null)
+    val balance: StateFlow<String?> = _balance.asStateFlow()
+
     private val agentPrefs = getApplication<Application>()
         .getSharedPreferences("agent", Context.MODE_PRIVATE)
 
@@ -49,6 +54,24 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val apiFirst = agentPrefs.getString("default_model", null)?.trim()?.ifBlank { null }
         _modelName.value = chosen ?: apiFirst ?: DeepSeekClient.DEFAULT_MODEL
         _defaultModel.value = apiFirst ?: DeepSeekClient.DEFAULT_MODEL
+    }
+
+    /** 查询 DeepSeek 账户余额（每次进入设置页时调用；未配 Key/失败静默保持旧值，不影响主链路） */
+    fun refreshBalance() {
+        val key = _apiKey.value
+        if (key.isBlank()) {
+            _balance.value = null
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val b = DeepSeekClient.getBalance(key)
+            if (b != null && b.totalBalance.isNotBlank()) {
+                // StateFlow 任意线程写安全；金额格式化为两位小数显示
+                _balance.value = "¥" + (b.totalBalance.toDoubleOrNull()?.let {
+                    String.format(java.util.Locale.CHINA, "%.2f", it)
+                } ?: b.totalBalance)
+            }
+        }
     }
 
     /** 从 DeepSeek /models 端点拉取可用模型列表（下拉选项由 API 返回；失败/无 Key 静默保持空） */

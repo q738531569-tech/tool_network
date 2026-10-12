@@ -191,6 +191,9 @@ object DeepSeekClient {
         val reasoning: String = "",
         /** finish_reason=length：输出被 max_tokens 截断（最终回复时提示用户可继续追问） */
         val truncated: Boolean = false,
+        /** 流式提前结束（收到内容但无 [DONE]/finish_reason=服务端断开/网络 RST）：正文可能半截，
+         *  最终回复时提示"回复中断，可让我继续"（2026-08-18 修复多工具轮后"莫名截断"） */
+        val interrupted: Boolean = false,
         /** 本轮 token 用量（含上下文缓存命中/未命中），服务端未返回时为 null */
         val usage: UsageInfo? = null
     )
@@ -501,6 +504,10 @@ object DeepSeekClient {
                 val reasoningSb = StringBuilder()
                 var finishReason = ""
                 var usage: UsageInfo? = null
+                // 流式结束检测：gotDone=收到 [DONE]；sawChunk=收到过任何内容/思考/工具分片——
+                // 循环正常退出但 sawChunk 且未 gotDone 且无 finish_reason = 服务端流提前断开（半截正文）
+                var gotDone = false
+                var sawChunk = false
                 // tool_calls 流式聚合：index → id/name/arguments 分片
                 val toolIds = mutableMapOf<Int, String>()
                 val toolNames = mutableMapOf<Int, String>()
@@ -510,7 +517,10 @@ object DeepSeekClient {
                         val line = source.readUtf8Line() ?: break
                         if (!line.startsWith("data:")) continue
                         val data = line.removePrefix("data:").trim()
-                        if (data.isEmpty() || data == "[DONE]") continue
+                        if (data.isEmpty() || data == "[DONE]") {
+                            if (data == "[DONE]") gotDone = true
+                            continue
+                        }
                         val obj = try { JSONObject(data) } catch (e: Exception) { continue }
                         val choice = obj.optJSONArray("choices")?.optJSONObject(0)
                         val delta = choice?.optJSONObject("delta")
@@ -518,6 +528,7 @@ object DeepSeekClient {
                         if (delta != null && !delta.isNull("reasoning_content")) {
                             val piece = delta.optString("reasoning_content")
                             if (piece.isNotEmpty()) {
+                                sawChunk = true
                                 reasoningSb.append(piece)
                                 onReasoning?.invoke(piece)
                             }
@@ -526,6 +537,7 @@ object DeepSeekClient {
                         if (delta != null && !delta.isNull("content")) {
                             val piece = delta.optString("content")
                             if (piece.isNotEmpty()) {
+                                sawChunk = true
                                 textSb.append(piece)
                                 onContentDelta?.invoke(piece)
                             }
@@ -533,6 +545,7 @@ object DeepSeekClient {
                         // 工具调用分片：按 index 聚合（arguments 跨 chunk 拼接）
                         val tcs = delta?.optJSONArray("tool_calls")
                         if (tcs != null) {
+                            sawChunk = true
                             for (i in 0 until tcs.length()) {
                                 val tc = tcs.optJSONObject(i) ?: continue
                                 val idx = tc.optInt("index", 0)
@@ -577,6 +590,8 @@ object DeepSeekClient {
                     toolCalls = calls,
                     reasoning = reasoningSb.toString(),
                     truncated = finishReason == "length",
+                    // 收到过内容但流未正常结束（无 [DONE]/finish_reason）→ 服务端提前断开，正文半截
+                    interrupted = sawChunk && !gotDone && finishReason.isBlank(),
                     usage = usage
                 )
             }

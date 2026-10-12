@@ -101,6 +101,9 @@ class RemoteAiSession(
     /** 挂起中的远程审批：reqId → 等待结果的 CompletableDeferred（并发安全，Map 跨线程） */
     private val pendingApprovals = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
 
+    /** 未决审批的命令缓存：reqId → command（控制端重连后 pending_approval_query 重发 approval_req 用） */
+    private val pendingApprovalCommands = ConcurrentHashMap<String, String>()
+
     /** 上一轮实测 prompt tokens（上下文规模真实值，驱动 50%/80% 自动压缩档位；首次为 0=满档） */
     @Volatile
     private var lastPromptTokens = 0L
@@ -400,6 +403,28 @@ class RemoteAiSession(
      */
     fun handleApprovalResp(reqId: String, allow: Boolean) {
         pendingApprovals.remove(reqId)?.complete(allow)
+        pendingApprovalCommands.remove(reqId)
+    }
+
+    /**
+     * 控制端重连后请求重发未决审批（{t:"pending_approval_query"}）：
+     * 网络波动导致控制端断线时，此前发出去的 approval_req 可能丢失（server 不缓存），
+     * 设备端会一直等到 120s 超时。控制端重连后发此帧 → 把所有仍挂起的审批重新下发，
+     * 控制端重新弹窗，审批不丢、设备不白等。
+     */
+    fun handlePendingApprovalQuery() {
+        if (pendingApprovalCommands.isEmpty()) return
+        pendingApprovalCommands.forEach { (reqId, command) ->
+            if (pendingApprovals.containsKey(reqId)) {
+                onSend(
+                    JSONObject()
+                        .put("t", "approval_req")
+                        .put("reqId", reqId)
+                        .put("toolName", "root_shell")
+                        .put("command", command)
+                )
+            }
+        }
     }
 
     // ==================== 会话管理协议（控制端 → 设备） ====================
@@ -414,7 +439,9 @@ class RemoteAiSession(
      *  - 带 beforeTs：分页取该时间戳之前（更早）的 5 条，控制页"加载更早"用（控制端会前插渲染） */
     fun handleSessionSwitch(id: String, beforeTs: Long) {
         if (id.isBlank()) return
-        if (busyFlag.get()) { onSend(sessionErr("正在执行任务")); return }
+        // 【修复 2026-08-17】busy 时仅拦截"切到别的会话"；切当前会话（网络波动重连后控制端拉历史恢复）放行——
+        // 否则设备端 AI 正忙时控制端重连 session_switch 被拒，消息区空白/不刷新，体验中断
+        if (busyFlag.get() && id != currentSessionId) { onSend(sessionErr("正在执行任务")); return }
         scope.launch {
             val result = synchronized(sessionLock) {
                 val loaded = loadSessionsUnlocked()
@@ -684,8 +711,8 @@ class RemoteAiSession(
                                     put(
                                         JSONObject()
                                             .put("name", tc.name)
-                                            .put("input", tc.input.take(2000))
-                                            .put("output", tc.output.take(4000))
+                                            .put("input", tc.input.take(4000))
+                                            .put("output", tc.output.take(8000))
                                     )
                                 }
                             }
@@ -738,12 +765,14 @@ class RemoteAiSession(
     }
 
     /** 消息列表 → JSONArray（供 session_switched 下发历史；含 reasoning/toolCalls/roundSec；
-     *  单条字段截断防单帧过大——历史回放显示用，超长内容不丢核心信息） */
+     *  单条字段仅防极端超长帧设大上限（text/reasoning 2 万、工具入参 4 千/输出 8 千），
+     *  正常长回复/长思考完整下发——历史回放不得截断内容（2026-08-18 修复：原 4000 截断致
+     *  控制台看 PDA 长消息尾部丢失） */
     private fun messagesToJsonArray(msgs: List<Msg>): JSONArray {
         val arr = JSONArray()
         msgs.forEach { m ->
-            val o = JSONObject().put("role", m.role).put("text", m.text.take(4000)).put("ts", m.ts)
-            m.reasoning?.let { o.put("reasoning", it.take(4000)) }
+            val o = JSONObject().put("role", m.role).put("text", m.text.take(20000)).put("ts", m.ts)
+            m.reasoning?.let { o.put("reasoning", it.take(20000)) }
             if (m.roundSec > 0) o.put("roundSec", m.roundSec)
             if (m.toolCalls.isNotEmpty()) {
                 val tcArr = JSONArray()
@@ -751,8 +780,8 @@ class RemoteAiSession(
                     tcArr.put(
                         JSONObject()
                             .put("name", tc.name)
-                            .put("input", tc.input.take(1000))
-                            .put("output", tc.output.take(2000))
+                            .put("input", tc.input.take(4000))
+                            .put("output", tc.output.take(8000))
                     )
                 }
                 o.put("toolCalls", tcArr)
@@ -876,6 +905,7 @@ class RemoteAiSession(
         val reqId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<Boolean>()
         pendingApprovals[reqId] = deferred
+        pendingApprovalCommands[reqId] = command   // 缓存命令：控制端重连后 pending_approval_query 重发用
         onSend(
             JSONObject()
                 .put("t", "approval_req")
@@ -889,6 +919,7 @@ class RemoteAiSession(
             withTimeoutOrNull(APPROVAL_TIMEOUT_MS) { deferred.await() }
         } finally {
             pendingApprovals.remove(reqId)
+            pendingApprovalCommands.remove(reqId)
         }
         return when (ok) {
             null -> "远程控制端未响应审批，已自动拒绝"

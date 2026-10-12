@@ -234,7 +234,7 @@ fun AiScreen(
         val remotePrefs = context.getSharedPreferences("remote", Context.MODE_PRIVATE)
         if (remotePrefs.getBoolean("enabled", false)) {
             Text(
-                text = "🛰 远程控制已开启——本机与控制端对话实时同步，root 命令审批在控制端（ARP 类命令免审批）",
+                text = "🛰 远程控制已开启——本机与控制端对话实时同步；本机发起的 root 命令在本机确认，控制端发起的在控制端确认（ARP 类命令免审批）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
@@ -1076,13 +1076,13 @@ private fun MessageBubble(msg: UiMsg, isThinking: Boolean = false, onDeleteRound
                                 Column(modifier = Modifier.padding(top = 4.dp)) {
                                     if (tc.input.isNotBlank()) {
                                         Text(
-                                            text = "入参：${tc.input.take(300)}",
+                                            text = "入参：${tc.input.take(1000)}${if (tc.input.length > 1000) "……" else ""}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     Text(
-                                        text = "输出：${tc.output.take(800)}${if (tc.output.length > 800) "……" else ""}",
+                                        text = "输出：${tc.output.take(8000)}${if (tc.output.length > 8000) "……" else ""}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

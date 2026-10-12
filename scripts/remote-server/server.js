@@ -115,6 +115,28 @@ function clientIp(req) {
 }
 
 /**
+ * 判断来源是否内网（RFC1918 私有网段 / 回环）——注册账号仅限内网环境使用
+ * （2026-08-20 用户需求：注册入口防公网陌生人注册进系统）。
+ * IPv4：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、127.0.0.0/8；
+ * IPv6：::1、fd00::/8（ULA）；带 ::ffff: 前缀的 IPv4 映射地址先剥前缀。
+ */
+function isPrivateIp(ip) {
+  if (!ip) return false;
+  const clean = String(ip).replace(/^::ffff:/, '').trim();
+  if (clean === '127.0.0.1' || clean === '::1') return true;
+  if (clean.startsWith('fd') && clean.includes(':')) return true; // fd00::/8 ULA
+  const m = clean.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return false;
+  const a = parseInt(m[1], 10);
+  const b = parseInt(m[2], 10);
+  return (
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+}
+
+/**
  * 频控检查（防暴力注册/登录）：窗口内尝试次数超限返回 true（本次拒绝），
  * 否则记录本次尝试并返回 false。
  */
@@ -295,10 +317,18 @@ function handleRegister(ws, msg) {
   broadcastDeviceList();
 }
 
-/** 控制端注册账号（装维名 + 密码） */
+/** 控制端注册账号（装维名 + 密码；2026-08-20 起仅限内网注册） */
 function handleRegisterAccount(ws, msg) {
   if (deviceWsMap.has(ws)) return;  // 设备 socket 不能注册账号
   if (controls.has(ws)) return;     // 已登录忽略
+
+  // 仅限内网注册（用户需求 2026-08-20）：公网 IP 直接拒绝，防外网陌生人注册进系统；
+  // 登录不受限（远程控制本身就是公网用的，装维在外网也要能登录）
+  if (!isPrivateIp(ws._ip)) {
+    safeSendControl(ws, { t: 'register_fail', reason: '注册已关闭' });
+    console.log(`[ctl] register_account BLOCKED public-ip=${ws._ip}`);
+    return;
+  }
 
   // IP 频控：每分钟最多 RATE_LIMIT_MAX 次注册/登录尝试（防刷账号/暴力）
   if (rateLimited(ws._ip)) {
@@ -453,6 +483,7 @@ function handleDeviceMessage(ws, msg) {
     case 'session_err':
     case 'memory_list_resp':
     case 'round_deleted':
+    case 'app_update_resp':   // 远程升级回执（设备 → 控制端：ok/phase/reason）
       // 原样转发给绑定该设备的控制端
       forwardToBoundControl(deviceId, msg);
       break;
@@ -497,11 +528,17 @@ function handleBind(ws, control, msg) {
   safeSendControl(ws, { t: 'bound', deviceId });
 }
 
-/** 控制端发 AI 消息 → 转发设备 ai_chat（roundId 服务端生成） */
+/** 控制端发 AI 消息 → 转发设备 ai_chat（roundId 服务端生成）；转发成功回 ack（送达确认，微信式） */
 function handleChat(ws, control, msg) {
-  if (!control.boundDeviceId) return;
+  if (!control.boundDeviceId) {
+    safeSendControl(ws, { t: 'ack', frame: 'chat', ok: false, reason: '未绑定设备' });
+    return;
+  }
   const device = devices.get(control.boundDeviceId);
-  if (!device || !device.online) return;
+  if (!device || !device.online) {
+    safeSendControl(ws, { t: 'ack', frame: 'chat', ok: false, reason: '设备离线' });
+    return;
+  }
 
   const roundId = nextRoundId();
   device.currentRoundId = roundId; // 记录进行中的 roundId，供 stop 使用
@@ -511,6 +548,7 @@ function handleChat(ws, control, msg) {
     text: typeof msg.text === 'string' ? msg.text : '',
     authorized: !!msg.authorized
   });
+  safeSendControl(ws, { t: 'ack', frame: 'chat', ok: true, roundId });
 }
 
 /** 控制端停止 → 转发设备 ai_stop（roundId 用当前进行中的 roundId） */
@@ -523,17 +561,24 @@ function handleStop(ws, control, msg) {
   safeSendDevice(device.ws, { t: 'ai_stop', roundId: device.currentRoundId });
 }
 
-/** 控制端审批响应 → 转发设备 approval_resp */
+/** 控制端审批响应 → 转发设备 approval_resp；转发成功回 ack（断线补发后控制端据此知道已送达） */
 function handleApprove(ws, control, msg) {
-  if (!control.boundDeviceId) return;
+  if (!control.boundDeviceId) {
+    safeSendControl(ws, { t: 'ack', frame: 'approve', ok: false, reason: '未绑定设备' });
+    return;
+  }
   const device = devices.get(control.boundDeviceId);
-  if (!device || !device.online) return;
+  if (!device || !device.online) {
+    safeSendControl(ws, { t: 'ack', frame: 'approve', ok: false, reason: '设备离线' });
+    return;
+  }
 
   safeSendDevice(device.ws, {
     t: 'approval_resp',
     reqId: msg.reqId,
     allow: !!msg.allow
   });
+  safeSendControl(ws, { t: 'ack', frame: 'approve', ok: true, reqId: msg.reqId });
 }
 
 /** 控制端会话操作 → 原样转发设备（session_* 帧无 roundId，字段原样带过去） */
@@ -570,6 +615,8 @@ function handleControlMessage(ws, msg) {
     case 'memory_delete':
     case 'memory_clear':
     case 'round_delete':
+    case 'pending_approval_query':   // 控制端重连后请求设备重发未决审批（断线丢 approval_req 的恢复）
+    case 'app_update':               // 远程强制升级（控制端 → 设备：检查更新+下载+root 静默安装+重启）
       handleSessionControl(ws, control, msg);
       break;
     default: break; // 未知帧忽略
@@ -598,6 +645,7 @@ function handleMessage(ws, msg) {
     case 'session_err':
     case 'memory_list_resp':
     case 'round_deleted':
+    case 'app_update_resp':   // 远程升级回执（设备 → 控制端）
       handleDeviceMessage(ws, msg);
       break;
     case 'bind':
@@ -615,6 +663,8 @@ function handleMessage(ws, msg) {
     case 'memory_delete':
     case 'memory_clear':
     case 'round_delete':
+    case 'pending_approval_query':
+    case 'app_update':   // 远程强制升级（控制端 → 设备）
       handleControlMessage(ws, msg);
       break;
     default:

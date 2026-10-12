@@ -24,6 +24,13 @@ import org.json.JSONObject
 import java.net.Proxy
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import com.installer.toolbox.ota.ApkUpdater
+import com.installer.toolbox.ota.DEFAULT_UPDATE_URL
+import com.installer.toolbox.ota.UpdateChecker
 
 /**
  * 远程 AI 控制 · 被控端前台服务（M2：通道 + 远程 AI 会话）。
@@ -45,6 +52,32 @@ class RemoteControlService : Service() {
 
     /** 远程 AI 会话（onCreate 实例化；onSend 直接复用本服务发帧方法） */
     private lateinit var aiSession: RemoteAiSession
+
+    /** 升级/后台任务协程作用域（升级走 IO） */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 安装完成后用 AlarmManager 延迟拉起新版本（进程被杀也可靠；2026-08-18 修复 postDelayed 失效） */
+    private fun scheduleRestart(delayMs: Long) {
+        // 自动重启主机制 = UpdateRestartReceiver（MY_PACKAGE_REPLACED，App 覆盖安装后系统拉起）；
+        // 此处 AlarmManager 兜底（receiver 被个别 ROM 拦截时尝试；MIUI 可能限制后台 Activity 启动）
+        val intent = Intent(this@RemoteControlService, com.installer.toolbox.MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pi = android.app.PendingIntent.getActivity(
+            this@RemoteControlService, 0x7755, intent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        try {
+            val am = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + delayMs, pi)
+        } catch (e: Exception) {
+            try {
+                (getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager)
+                    .set(android.app.AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + delayMs, pi)
+            } catch (e2: Exception) {
+                // 仍失败则忽略（用户可手动开 App）
+            }
+        }
+    }
 
     /** 主线程 Handler：用于重连延迟调度（postDelayed） */
     private val handler = Handler(Looper.getMainLooper())
@@ -335,14 +368,27 @@ class RemoteControlService : Service() {
         }
     }
 
-    /** 当前 Wi-Fi 名称（去掉系统自带的双引号；无 Wi-Fi 返回空串） */
+    /** 当前 Wi-Fi 名称（去掉系统自带的双引号；无 Wi-Fi 返回空串）
+     *  2026-08-19：远程服务后台运行时定位权限仅"使用时允许"（foreground），
+     *  系统 API 读 SSID 返回 <unknown ssid>——有 root 时用 cmd wifi status 兜底直读。 */
     @Suppress("DEPRECATION") // connectionInfo 自 API 31 起废弃，M1 仍用它读 SSID（服务端仅展示）
     private fun currentSsid(): String {
-        return try {
+        // 一：标准 API（前台运行时定位权限可用，能直接读到）
+        try {
             val wm = applicationContext.getSystemService(WifiManager::class.java) ?: return ""
-            val raw = wm.connectionInfo?.ssid ?: return ""
+            val raw = wm.connectionInfo?.ssid ?: ""
             // 系统返回的 SSID 带双引号（如 "TP-LINK_5G"），去掉引号
-            raw.trim('"')
+            val clean = raw.trim('"')
+            // 后台权限受限时返回 "<unknown ssid>"，判空降级走 root 兜底
+            if (clean.isNotBlank() && !clean.contains("unknown", ignoreCase = true)) return clean
+        } catch (e: Exception) {
+            // 异常则走 root 兜底
+        }
+        // 二：root 兜底（后台时定位权限受限，系统 API 读不到；root 下 cmd wifi status 直读系统状态）
+        return try {
+            val out = com.installer.toolbox.core.agent.RootShell.run("cmd wifi status")
+            val m = Regex("WifiInfo: SSID: \"([^\"]+)\"").find(out)
+            m?.groupValues?.get(1)?.trim('"') ?: ""
         } catch (e: Exception) {
             ""
         }
@@ -433,8 +479,12 @@ class RemoteControlService : Service() {
                 "memory_list" -> aiSession.handleMemoryList()
                 "memory_delete" -> aiSession.handleMemoryDelete(json.optString("text"))
                 "memory_clear" -> aiSession.handleMemoryClear()
+                // 控制端重连后请求重发未决审批（断线丢 approval_req 的恢复）
+                "pending_approval_query" -> aiSession.handlePendingApprovalQuery()
                 // 删除一轮对话（控制端 → 设备：该轮不再进入 AI 上下文）
                 "round_delete" -> aiSession.handleRoundDelete(json.optString("id"), json.optLong("ts", 0L))
+                // 远程强制升级（控制端 → 设备：检查更新+下载+root 静默安装+重启应用）
+                "app_update" -> handleAppUpdate(json.optString("action", "check_and_install"))
                 // 其余未知帧忽略
             }
         }
@@ -444,6 +494,61 @@ class RemoteControlService : Service() {
             scheduleReconnect()
         }
 
+    /**
+     * 远程强制升级（2026-08-18 用户需求）：控制端发 app_update 帧 →
+     * 检查更新源 → 有新版本则下载 APK → root 静默安装 → 重启应用。
+     * 安全保护：设备正在执行任务（AI 轮次 busy）时不安装，回执提示由控制端决定。
+     */
+    private fun handleAppUpdate(action: String) {
+        // 【用户拍板：PDA 在执行任务先别安装】本地或远程 AI 轮次进行中 → 拒绝并回执
+        if (aiSession.busy || AiSyncBus.localBusy) {
+            send("""{"t":"app_update_resp","ok":false,"reason":"设备正在执行任务，暂不升级，请稍后再试"}""")
+            return
+        }
+        scope.launch {
+            try {
+                val base = DEFAULT_UPDATE_URL
+                val check = UpdateChecker.checkUpdate(base)
+                val info = check.getOrNull()
+                if (info == null) {
+                    val err = check.exceptionOrNull()?.message ?: "未知错误"
+                    send("""{"t":"app_update_resp","ok":false,"reason":"检查更新失败：$err"}""")
+                    return@launch
+                }
+                val cur = runCatching {
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+                }.getOrDefault("0")
+                val needUpgrade = action == "force" || UpdateChecker.isNewer(cur, info.latestVersion)
+                if (!needUpgrade) {
+                    send("""{"t":"app_update_resp","ok":false,"reason":"已是最新版本 $cur"}""")
+                    return@launch
+                }
+                send("""{"t":"app_update_resp","ok":true,"phase":"downloading","version":"${info.latestVersion}"}""")
+                val apk = ApkUpdater.download(this@RemoteControlService, base, info) { _, _ -> }
+                if (apk == null) {
+                    send("""{"t":"app_update_resp","ok":false,"reason":"APK 下载失败"}""")
+                    return@launch
+                }
+                send("""{"t":"app_update_resp","ok":true,"phase":"installing","version":"${info.latestVersion}"}""")
+                // 【重启可靠性 2026-08-18】root 静默安装会在 pm install 成功瞬间杀进程（含本服务），
+                // **安装前**设好重启（nohup 后台：10 秒后 am start 拉起新版本，不阻塞 install 立即执行）；
+                // 非 root（走系统安装器）不设（用户手动确认，无需重启）
+                val rootOk = com.installer.toolbox.core.agent.RootShell.isAvailable()
+                if (rootOk) scheduleRestart(10000)
+                val result = ApkUpdater.install(
+                    this@RemoteControlService, apk,
+                    com.installer.toolbox.core.agent.RootShell::run
+                )
+                if (result.startsWith("已通过 root 安装")) {
+                    send("""{"t":"app_update_resp","ok":true,"phase":"done","version":"${info.latestVersion}","reason":"已安装，正在重启应用"}""")
+                } else {
+                    send("""{"t":"app_update_resp","ok":false,"reason":"安装失败：$result"}""")
+                }
+            } catch (e: Exception) {
+                send("""{"t":"app_update_resp","ok":false,"reason":"升级异常：${e.message ?: "未知错误"}"}""")
+            }
+        }
+    }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             // 正常关闭或对端关闭：进入重连（服务销毁时 destroyed=true 会拦截）
             scheduleReconnect()

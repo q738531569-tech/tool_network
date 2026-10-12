@@ -54,6 +54,13 @@
 | `WifiAnalyzer` | Wi-Fi 信号/信道/邻频分析（反射兼容 Android 14 `SSID/BSSID` 改名） |
 | `WifiRadar` | Wi-Fi 信道雷达图（各信道网络数与干扰） |
 | `DfsChecker` | DFS 信道航空雷达风险检测（5GHz UNII-2/2e 与雷达共用频段） |
+| `WifiQrParser` | Wi-Fi 二维码解析（`WIFI:S/P/T/H` 前缀格式，键大小写不敏感 + `\;\:` 转义还原 + 开放网络识别），供扫码页一键连 Wi-Fi |
+
+### `cable/` — 网线测试
+
+| 类 | 职责 |
+|---|---|
+| `CableProbe` | 网线质量测试（需 root，PDA 网口直插被测线）：读 sysfs `carrier/speed/duplex/operstate` + 错误帧窗口增量，并对端 ping（默认网关）测丢包/时延/抖动。判定：link down=线断、千兆协商成百兆=断芯铁证、错误帧暴涨=短路/干扰/接触不良、丢包 ≥10%=线质量差。属**表现型推断**——测不出具体哪对芯/短路位置（需万用表/TDR）；只读不干预网口 |
 
 ### `util/`
 

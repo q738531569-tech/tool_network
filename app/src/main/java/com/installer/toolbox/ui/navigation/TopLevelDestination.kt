@@ -58,6 +58,10 @@ object Routes {
     const val WEAK_NETWORK = "weak_network"
     // SNMP 面板（查询设备系统信息：名称/描述/运行时间/位置/联系人）
     const val SNMP = "snmp"
+    // 网线测试（PDA 有线网口直插测线：断芯/短芯/物理层异常判定，需 root）
+    const val CABLE_TEST = "cable_test"
+    // 光猫 Web 助手（WebView 内嵌登录光猫 + AI web_page_read 同进程读 DOM 分析）
+    const val MODEM_WEB = "modem_web"
     // 局域网唤醒（输入 MAC 发 magic packet 远程开机，无需 root）
     const val WAKE_ON_LAN = "wake_on_lan"
     // 反馈与建议（一键提交到服务器反馈接口）

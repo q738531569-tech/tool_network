@@ -75,7 +75,11 @@ import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import com.installer.toolbox.core.agent.RootShell
 import com.installer.toolbox.core.network.discovery.BarcodeUtils
+import com.installer.toolbox.core.network.wifi.WifiQr
+import com.installer.toolbox.core.network.wifi.WifiQrParser
+import com.installer.toolbox.util.WifiQrConnector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -90,13 +94,17 @@ import java.util.concurrent.Executors
  * - 扫码页：CameraX 实时预览（闪光灯可控，暗光适配）+ 相册选图兜底，逐帧解码
  * - 生成页：文本 → 二维码/条码（QR / CODE_128 / EAN_13 / CODE_39）
  *
- * @param initialTab 兼容旧参数：1 直接进生成页，其余进选择页
+ * @param initialTab 兼容旧参数：1 直接进生成页，2 直接进扫码识别页（首页右上角快捷扫码），其余进选择页
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BarcodeScreen(initialTab: Int = 0) {
     // 页面切换（页面内状态，不走导航）：choose / scan / generate
-    var page by remember { mutableStateOf(if (initialTab == 1) "generate" else "choose") }
+    var page by remember {
+        mutableStateOf(
+            when (initialTab) { 1 -> "generate"; 2 -> "scan"; else -> "choose" }
+        )
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -236,6 +244,20 @@ private fun ScanScreen(
     var analyzing by remember { mutableStateOf(true) }
     var decodedText by remember { mutableStateOf<String?>(null) }
     var decodedFormat by remember { mutableStateOf<String?>(null) }
+
+    // —— 扫 WiFi 二维码自动连接 ——
+    val scope = rememberCoroutineScope()
+    val rootAvailable = remember { RootShell.isAvailable() }   // root 走 cmd wifi 静默直连
+    var connecting by remember { mutableStateOf(false) }        // 连接进行中（防连点）
+    // Android 13+ 免 root 需要「附近设备」运行时权限
+    val nearbyPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        scope.launch {
+            if (granted) snackbarHostState.showSnackbar("权限已授予，请再点一次「连接此 WiFi」")
+            else snackbarHostState.showSnackbar("未授予「附近设备」权限，无法连接 WiFi")
+        }
+    }
 
     // 相册选图兜底
     val pickLauncher = rememberLauncherForActivityResult(
@@ -382,31 +404,118 @@ private fun ScanScreen(
                 }
                 // 解码结果
                 decodedText?.let { text ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp)
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(
-                                text = "识别结果${decodedFormat?.let { "（$it）" } ?: ""}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedButton(onClick = { copyToClipboard(context, text) }) {
-                                Text("复制结果")
+                    val wifiQr = WifiQrParser.parse(text)
+                    if (wifiQr != null) {
+                        // —— WiFi 二维码：显示信息 + 一键连接 ——
+                        WifiQrConnectCard(
+                            qr = wifiQr,
+                            rootAvailable = rootAvailable,
+                            connecting = connecting,
+                            onConnect = {
+                                scope.launch {
+                                    connecting = true
+                                    val result = WifiQrConnector.connect(
+                                        context = context,
+                                        qr = wifiQr,
+                                        rootAvailable = rootAvailable,
+                                        onNearbyPermissionNeeded = {
+                                            nearbyPermissionLauncher.launch(
+                                                Manifest.permission.NEARBY_WIFI_DEVICES
+                                            )
+                                        }
+                                    )
+                                    connecting = false
+                                    snackbarHostState.showSnackbar(
+                                        when (result) {
+                                            is WifiQrConnector.ConnectResult.Success ->
+                                                "已连接 ${wifiQr.ssid}（${result.via}）"
+                                            is WifiQrConnector.ConnectResult.AwaitingSystemConfirm ->
+                                                "请在系统弹窗里点「连接」即可连上 ${wifiQr.ssid}"
+                                            is WifiQrConnector.ConnectResult.Failure ->
+                                                result.reason
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                    } else {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "识别结果${decodedFormat?.let { "（$it）" } ?: ""}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = text,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedButton(onClick = { copyToClipboard(context, text) }) {
+                                    Text("复制结果")
+                                }
                             }
                         }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
+/** WiFi 二维码连接卡：识别到 WIFI: 码后展示网络信息 + 一键连接 */
+@Composable
+private fun WifiQrConnectCard(
+    qr: WifiQr,
+    rootAvailable: Boolean,
+    connecting: Boolean,
+    onConnect: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                text = "📶 WiFi 二维码",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "网络：${qr.ssid}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "加密：${if (qr.isOpen) "开放（无密码）" else (qr.type ?: "WPA/WPA2")}" +
+                    if (qr.hidden) " · 隐藏网络" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = if (rootAvailable)
+                    "已检测到 root：将静默直连（不弹系统确认）"
+                else
+                    "无 root：将调起系统连接确认（Android 13+ 需「附近设备」权限，首次会自动申请）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = onConnect,
+                enabled = !connecting
+            ) {
+                Text(if (connecting) "连接中…" else "连接此 WiFi")
             }
         }
     }

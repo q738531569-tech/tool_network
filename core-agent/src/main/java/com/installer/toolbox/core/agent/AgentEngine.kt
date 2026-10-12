@@ -1,6 +1,8 @@
 package com.installer.toolbox.core.agent
 
 import android.content.Context
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.ensureActive
 import com.installer.toolbox.core.agent.DeepSeekClient.ChatMessage
 import com.installer.toolbox.core.agent.DeepSeekClient.ToolCall
 
@@ -12,8 +14,10 @@ import com.installer.toolbox.core.agent.DeepSeekClient.ToolCall
  */
 object AgentEngine {
 
-    /** Agent 工具循环最大轮数（每轮模型可调用一批工具，防死循环） */
-    private const val MAX_TOOL_ROUNDS = 8
+    /** 2026-08-18 用户拍板：**去掉工具循环轮数上限**——AI 一直调工具直到给出结论；
+     *  陷入死循环由用户手动点停止（停止按钮实时生效：轮边界/工具间 ensureActive 检查取消）。
+     *  工具循环每轮模型可调一批工具。 */
+    // （原 MAX_TOOL_ROUNDS=8 上限已删除；收尾请求逻辑一并移除）
 
     /** 工具输出进上下文的单条字符上限（多工具轮次防上下文/输出预算挤压；UI 层另有完整折叠记录） */
     private const val TOOL_CTX_CHARS = 3000
@@ -21,15 +25,15 @@ object AgentEngine {
     /**
      * Agent 工具调用循环（M5.1）：自由对话 + 主动调用 APP 内诊断工具。
      *
-     * 流程（流式，上限 [MAX_TOOL_ROUNDS] 轮）：
+     * 流程（流式，**无轮数上限**——2026-08-18 用户拍板，复杂排查场景 8 轮不够）：
      * 1. [DeepSeekClient.chatWithTools] 带全部工具定义请求模型（stream=true）；
      *    思考链增量 → onReasoning（逐行打印）；正文增量 → 累积快照 onDelta（过渡语/最终回答逐行）；
      * 2. 无 toolCalls → 本轮 text 即最终回答；
      * 3. 有 toolCalls → 依次 [AgentTools.execute] 执行（[onStatus] 提示），
      *    把 assistant 消息（**含 tool_calls 原样回传**，OpenAI 协议要求）
      *    + 每条 tool 结果消息（role=tool, tool_call_id=id）追加进 messages，
-     *    继续下一轮，直到模型给出最终回答或达到轮数上限；
-     * 4. 达上限仍没结论 → 追加一轮不带工具的收尾请求，让模型基于已有信息总结（不再腰斩半截话）。
+     *    继续下一轮，直到模型给出最终回答；
+     * 4. 模型陷入死循环时由用户手动点停止（每轮边界/工具间 ensureActive 检查，取消实时生效）。
      *
      * @param context 应用上下文（工具执行需要）
      * @param apiKey DeepSeek API Key
@@ -64,9 +68,11 @@ object AgentEngine {
 
         var finalText = ""
         var round = 0
-        var finished = false   // 模型是否在轮数上限内正常给出最终回答
-        while (round < MAX_TOOL_ROUNDS) {
+        // 【2026-08-18 用户拍板】无轮数上限：while(true) 一直调工具直到模型给结论；
+        // 死循环由用户手动停止（每轮 ensureActive 检查，停止按钮实时生效）
+        while (true) {
             round++
+            coroutineContext.ensureActive()   // 【修复 2026-08-17】停止按钮实时生效：轮边界检查取消
             // 聚合本轮思考链（流式增量回调：UI 逐行打印思考过程）
             val roundReasoning = StringBuilder()
             val wrappedReasoning: (String) -> Unit = { piece ->
@@ -88,14 +94,16 @@ object AgentEngine {
             result.usage?.let { onUsage?.invoke(it) }
 
             if (result.toolCalls.isEmpty()) {
-                // 模型直接给出最终回答，结束循环；被 max_tokens 截断时追加提示（对齐 harness 的
-                // max-tokens finish 处理：提示可继续追问，而不是让截断内容显得完整）
-                finalText = if (result.truncated && result.text.isNotBlank()) {
-                    result.text + "\n\n⚠ 回复过长已被截断，可让我继续补充。"
-                } else {
-                    result.text
+                // 模型直接给出最终回答，结束循环；被 max_tokens 截断或流中断时追加提示
+                // （对齐 harness 的 max-tokens finish 处理：提示可继续追问，而不是让截断内容显得完整；
+                //   2026-08-18 补流中断：多工具轮后网络波动致服务端流提前断开，正文半截——明确提示可继续）
+                finalText = when {
+                    result.truncated && result.text.isNotBlank() ->
+                        result.text + "\n\n⚠ 回复过长已被截断，可让我继续补充。"
+                    result.interrupted && result.text.isNotBlank() ->
+                        result.text + "\n\n⚠ 回复中断（网络波动或服务异常），可让我继续补充。"
+                    else -> result.text
                 }
-                finished = true
                 break
             }
 
@@ -117,6 +125,7 @@ object AgentEngine {
             )
             // 2) 依次执行工具，结果作为 role=tool 消息追加
             for (call in result.toolCalls) {
+                coroutineContext.ensureActive()   // 【修复 2026-08-17】工具间检查取消（前一个工具跑完立即停，不继续下一个）
                 onStatus("正在调用工具：${call.name}…")
                 // 审批闸门：返回非 null 即拒绝（拒绝文本作为工具结果回传，模型可继续对话说明）
                 val denied = toolGate(call)
@@ -135,44 +144,8 @@ object AgentEngine {
                 messages.add(ChatMessage("tool", ctxOutput, toolCallId = call.id))
             }
         }
-
-        // 达到轮数上限且模型仍未给出最终回答（最后一轮还在调工具，正文停在半截）：
-        // 追加收尾请求——不带工具定义，模型只能基于已有信息给结论（修复"话说一半被腰斩"）
-        if (!finished) {
-            val closeText = StringBuilder()
-            val closeReasoning = StringBuilder()
-            val closeDelta: (String) -> Unit = { piece ->
-                closeText.append(piece)
-                onDelta(closeText.toString())
-            }
-            val closeReasoningCb: (String) -> Unit = { piece ->
-                closeReasoning.append(piece)
-                onReasoning(piece)
-            }
-            messages.add(
-                ChatMessage(
-                    "system",
-                    "已达工具轮数上限（$MAX_TOOL_ROUNDS 轮），请基于以上信息直接给出最终结论，不要再调用工具。"
-                )
-            )
-            val r = runCatching {
-                DeepSeekClient.chatWithTools(
-                    apiKey, messages, emptyList(), closeReasoningCb, model,
-                    onContentDelta = closeDelta
-                )
-            }.getOrNull()
-            if (r != null) {
-                r.usage?.let { onUsage?.invoke(it) }
-                finalText = if (r.truncated && r.text.isNotBlank()) {
-                    r.text + "\n\n⚠ 回复过长已被截断，可让我继续补充。"
-                } else {
-                    r.text
-                }
-            }
-            if (finalText.isBlank()) {
-                finalText = "已连续调用 $MAX_TOOL_ROUNDS 轮工具仍未得到最终结论，请缩小问题范围后重试。"
-            }
-        }
+        // 2026-08-18 用户拍板去掉轮数上限后，不再有"达上限收尾请求"——模型给结论即 break，
+        // 死循环用户手动停止（停止按钮实时生效）；此处直接返回最终结论
         onDelta(finalText)
         return finalText
     }

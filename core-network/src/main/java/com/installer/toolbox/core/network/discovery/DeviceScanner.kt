@@ -7,7 +7,9 @@ import com.installer.toolbox.core.network.util.ArpTable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
@@ -183,6 +185,7 @@ class DeviceScanner(private val context: Context? = null) {
         val seenIp = mutableSetOf<String>()
         val BATCH = 32
         for (batchStart in 1..254 step BATCH) {
+            coroutineContext.ensureActive()   // 【修复 2026-08-17】停止按钮实时生效：每批检查取消（254 台分 8 批，取消立即退出）
             val batchEnd = minOf(batchStart + BATCH - 1, 254)
             // Kotlin 生成字面 IP，避开 sh 变量/命令替换转义坑；& 后台并发 + wait
             val cmds = (batchStart..batchEnd).joinToString(" & ") {

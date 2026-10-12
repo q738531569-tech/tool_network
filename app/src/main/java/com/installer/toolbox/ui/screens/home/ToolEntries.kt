@@ -11,7 +11,9 @@ import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.EmergencyShare
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Cable
 import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -150,6 +152,20 @@ object ToolEntries {
                     desc = "远程开机：让关机/休眠的电脑一键开机（需电脑开启网络唤醒）",
                     icon = Icons.Filled.PowerSettingsNew,
                     route = Routes.WAKE_ON_LAN
+                ),
+                ToolEntry(
+                    id = "cable_test",
+                    name = "网线测试",
+                    desc = "网线插设备网口直接测：断芯、短芯、接触不良一眼看出（需 root+有线网口）",
+                    icon = Icons.Filled.Cable,
+                    route = Routes.CABLE_TEST
+                ),
+                ToolEntry(
+                    id = "modem_web",
+                    name = "光猫 Web 助手",
+                    desc = "内嵌浏览器打开光猫管理页，AI 帮你读页面分析设备信息/日志（免 root）",
+                    icon = Icons.Filled.Router,
+                    route = Routes.MODEM_WEB
                 )
             )
         ),
@@ -234,7 +250,7 @@ object ToolEntries {
                 ToolEntry(
                     id = "barcode",
                     name = "二维码/条码功能",
-                    desc = "扫码识别、生成二维码/条码",
+                    desc = "扫码识别、生成二维码/条码；扫 WiFi 分享码可一键连网",
                     icon = Icons.Filled.QrCodeScanner,
                     route = Routes.BARCODE_SCAN
                 )

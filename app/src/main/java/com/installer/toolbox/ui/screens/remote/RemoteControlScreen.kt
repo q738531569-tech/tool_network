@@ -385,6 +385,14 @@ private fun ConsoleView(vm: RemoteControlViewModel) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline
             )
+            // 远程强制升级（设备级操作，2026-08-18）
+            Spacer(Modifier.width(6.dp))
+            TextButton(
+                onClick = { vm.sendUpgrade() },
+                enabled = vm.boundDeviceId != null
+            ) {
+                Text("⬆ 升级", style = MaterialTheme.typography.labelSmall)
+            }
         }
 
         // ---- 余额 + 缓存命中顶部状态行（每轮完成设备端推送 / usage 事件）----
@@ -900,13 +908,13 @@ private fun ToolCardBlock(msg: RemoteMsg, index: Int, tc: RemoteToolCard) {
             Column(modifier = Modifier.padding(top = 4.dp)) {
                 if (tc.input.isNotBlank()) {
                     Text(
-                        text = "入参：${tc.input.take(300)}",
+                        text = "入参：${tc.input.take(1000)}${if (tc.input.length > 1000) "……" else ""}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Text(
-                    text = "输出：${tc.output.take(800)}${if (tc.output.length > 800) "……" else ""}",
+                    text = "输出：${tc.output.take(8000)}${if (tc.output.length > 8000) "……" else ""}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
